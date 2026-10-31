@@ -71,10 +71,12 @@ def _review_lines(r: Report) -> List[str]:
 
 
 def _win_change(m) -> str:
+    """Each week's fpts and win chance change. A decided week's fpts are left out: they don't matter."""
     parts = []
     for label, b, a in (("this week", m.before.now, m.after.now), ("next week", m.before.next, m.after.next)):
-        if b is not None and a is not None and abs(a.win - b.win) >= 0.005:
-            parts.append(f"{label} {_pct(b.win)} to {_pct(a.win)}")
+        if b is None or a is None or (b.decided and abs(a.win - b.win) < 0.005):
+            continue
+        parts.append(f"{a.mine - b.mine:+.0f} fpts {label} ({_pct(b.win)} to {_pct(a.win)})")
     return ", ".join(parts) or "no change to your win chances"
 
 
@@ -136,7 +138,7 @@ def render(r: Report) -> str:
             a = m.add.player
             head = f"{i}. Add **{a.name}** ({a.pro_team} {_pos(a)}, {a.percent_owned:.0f}% owned), drop **{m.drop.player.name}**"
             if m.kind == "stream" and m.win_gain is not None:
-                head += f" (streaming spot). ~{m.gain:+.0f} fpts, {_win_change(m)}"
+                head += f" (streaming spot). ~{_win_change(m)}"
             elif m.kind == "stream":
                 head += f" (streaming spot). ~{m.gain:+.0f} fpts over the next {r.horizon_days} days"
             else:
