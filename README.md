@@ -22,6 +22,18 @@ expected value = sum over games in the next N days of
 - Points leagues use ESPN's own fantasy point averages. Category leagues fall back to standard ESPN points as a ranking proxy.
 - Two pickups are never stacked on the same injury, since both lose value when that starter returns.
 
+## Hashtag Basketball rankings
+
+Each run also scrapes the free [9-cat rankings](https://hashtagbasketball.com/fantasy-basketball-rankings) from Hashtag Basketball for the season and the last 7 and 14 days. It covers every player who has played, not just the top 200, and lists ESPN position eligibility. Each player's line (per game stats, a z-score per category, and Hashtag's overall value) is attached by name to the ESPN player as `PlayerView.hashtag[window]`, so the scoring and reports can use it. The scraper is adapted from [cdchan/fantasy-basketball](https://github.com/cdchan/fantasy-basketball/blob/master/scrape_hashtagbasketball.py), whose projections page now shows free users only the top 30.
+
+Settings live under `[hashtag]` in `bot.toml`. If the scrape fails the run logs a warning and carries on without it. To look at the rankings on their own or save CSVs:
+
+```bash
+python -m fantasy_bot.hashtag --windows last_7 last_14 --out data/hashtag
+```
+
+If a player won't match because the two sites spell his name differently, add the pair to `ALIASES` in `fantasy_bot/hashtag.py`.
+
 ## The chopping block
 
 Put your late round picks in `chopping_block` in `bot.toml`. With `auto_chop_pickups = true` (the default) anyone you pick up from waivers or free agency is also droppable, so the daily streaming loop keeps going without editing the file. Move a pickup into `untouchable` once he earns a permanent spot.
