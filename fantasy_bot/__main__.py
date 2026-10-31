@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
-from .config import load_config
+import requests
+
+from . import hashtag
+from .config import Config, load_config
+from .model import Snapshot
 from .recommend import build_report
 from .report import post_to_discord, render
+
+
+def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
+    """Scraping is the flakiest step, so a failure here warns instead of killing the run."""
+    try:
+        rankings = hashtag.fetch_rankings(cfg.hashtag_windows)
+    except (requests.RequestException, hashtag.HashtagError) as e:
+        print(f"warning: skipped Hashtag Basketball rankings: {e}", file=sys.stderr)
+        return
+    matched = hashtag.attach(snap.all_players(), rankings)
+    fa = sum(1 for p in snap.free_agents if p.hashtag)
+    print(f"hashtag: matched {matched} players ({fa} of {len(snap.free_agents)} free agents)", file=sys.stderr)
+    if cfg.hashtag_save_dir:
+        hashtag.write_csv(rankings, cfg.hashtag_save_dir)
 
 
 def main() -> None:
@@ -27,7 +46,11 @@ def main() -> None:
             print(f"{t.team_id:>3}  {t.team_name}")
         return
 
-    text = render(build_report(source.snapshot(), cfg))
+    snap = source.snapshot()
+    if cfg.hashtag_enabled:
+        add_hashtag_rankings(snap, cfg)
+
+    text = render(build_report(snap, cfg))
     print(text)
     if cfg.discord_webhook and not args.no_post:
         post_to_discord(cfg.discord_webhook, text)

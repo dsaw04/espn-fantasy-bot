@@ -43,6 +43,11 @@ class Config:
     weights: Weights = field(default_factory=Weights)
     discord_webhook: Optional[str] = None
 
+    # Hashtag Basketball 9-cat rankings, joined onto every player each run
+    hashtag_enabled: bool = True
+    hashtag_windows: List[str] = field(default_factory=lambda: ["season", "last_7", "last_14"])
+    hashtag_save_dir: Optional[str] = None  # also write the scraped rankings here as CSV
+
 
 def _read(path: Path) -> Dict:
     if not path.exists():
@@ -61,6 +66,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
     raw.setdefault("bot", {}).update(secret.get("bot", {}))
     bot = raw.get("bot", {})
     w = raw.get("weights", {})
+    htb = raw.get("hashtag", {})
 
     def env(name: str, fallback=None):
         return os.environ.get(name) or fallback
@@ -83,7 +89,13 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         dtd_availability=float(bot.get("dtd_availability", 0.6)),
         weights=Weights(**{k: float(v) for k, v in w.items()}),
         discord_webhook=env("DISCORD_WEBHOOK_URL", bot.get("discord_webhook")),
+        hashtag_enabled=bool(htb.get("enabled", True)),
+        hashtag_windows=list(htb.get("windows", ["season", "last_7", "last_14"])),
+        hashtag_save_dir=htb.get("save_dir") or None,
     )
+    bad = set(cfg.hashtag_windows) - {"season", "last_7", "last_14", "last_30"}
+    if bad:
+        raise SystemExit(f"[hashtag] windows has unknown entries {sorted(bad)}.")
     if not (cfg.league_id and cfg.year and cfg.team_id):
         raise SystemExit(
             "league_id, year and team_id are required (config.toml or ESPN_* env vars)."

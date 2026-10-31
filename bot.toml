@@ -23,6 +23,13 @@ min_minutes_for_depth = 18 # an injured player must average this to open up a ro
 absorb_rate = 0.5          # share of an injured player's production backups pick up
 dtd_availability = 0.6     # how much to discount day-to-day players
 
+[hashtag]
+# Scrapes hashtagbasketball.com/fantasy-basketball-rankings (free, every player)
+# and attaches each player's 9-cat line and z-scores for these windows.
+enabled = true
+windows = ["season", "last_7", "last_14"]   # any of season, last_7, last_14, last_30
+# save_dir = "data/hashtag"                 # uncomment to also save CSVs (plus dated copies)
+
 [weights]
 # How much each split counts toward per game value. Lean on projections early
 # in the season, then shift weight to last_7 and last_15 as samples grow.

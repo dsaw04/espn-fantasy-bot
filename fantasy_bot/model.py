@@ -28,9 +28,10 @@ class HashtagLine:
     mpg: float
     # per game averages: FG%, FGM, FGA, FT%, FTM, FTA, 3PM, PTS, REB, AST, STL, BLK, TO
     stats: Dict[str, float] = field(default_factory=dict)
-    # z-score per category, the building blocks of total
+    # z-score per category, higher is better in every one (TO included)
     zscores: Dict[str, float] = field(default_factory=dict)
-    total: float = 0.0  # Hashtag's overall per game value, sum of the z-scores
+    # Hashtag's overall per game value: the z-scores summed with its default H2H weights (TO counts x0.25)
+    total: float = 0.0
     hashtag_id: Optional[int] = None
 
 
