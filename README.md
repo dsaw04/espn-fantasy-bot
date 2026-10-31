@@ -91,7 +91,13 @@ python -m fantasy_bot --no-post        # print today's report
 
 1. Push this folder to a **private** GitHub repo.
 2. Add repo secrets: `ESPN_S2`, `ESPN_SWID`, and optionally `DISCORD_WEBHOOK_URL`.
-3. The workflow in `.github/workflows/daily-scout.yml` runs at 18:30 UTC (7:30am NZ time, early afternoon US Eastern before tip-off). Change the cron to suit. You can also trigger it by hand from the Actions tab.
+3. Two workflows run on their own. You can also trigger either by hand from the Actions tab.
+   - `daily-scout.yml` posts the full report at 18:30 UTC (7:30am NZ time, early afternoon US Eastern before tip-off).
+   - `lineup-check.yml` runs every hour from noon to 11pm US Eastern and posts only when your lineup needs a change it hasn't already told you about today. Late scratches and rest days usually show up about an hour before tip-off, after the daily report has gone out.
+
+Both keep their state on a `bot-data` branch, which the first run creates: which alerts went out today, and (see below) the run history. That's about 12 short runs a day, roughly 400 Actions minutes a month: free on a public repo, and inside the 2,000 free minutes on a private one. GitHub turns off scheduled workflows in a public repo after 60 days with no activity.
+
+To try the lineup check locally: `python -m fantasy_bot --lineup-only --no-post`.
 
 To get a Discord post: Server Settings > Integrations > Webhooks > New Webhook, then copy the URL.
 

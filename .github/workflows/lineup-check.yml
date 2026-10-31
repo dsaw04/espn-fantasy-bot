@@ -1,0 +1,43 @@
+name: Lineup check
+
+on:
+  schedule:
+    # Hourly from noon to 11pm US Eastern (daylight time; an hour earlier in winter),
+    # so late scratches and rest days get caught before each wave of tip-offs.
+    # GitHub often starts scheduled runs 5-30 minutes late, hence every hour.
+    - cron: "0 0-3,16-23 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # to remember which alerts were sent today, on the bot-data branch
+
+concurrency:
+  group: bot-data
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out alert state
+        uses: actions/checkout@v4
+        continue-on-error: true  # the branch doesn't exist until the first run saves it
+        with:
+          ref: bot-data
+          path: data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Check lineup
+        env:
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          ESPN_SWID: ${{ secrets.ESPN_SWID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python -m fantasy_bot --lineup-only --data-dir data
+      - name: Save alert state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .github/scripts/save-data.sh "lineup check"

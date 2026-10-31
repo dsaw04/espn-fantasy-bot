@@ -628,3 +628,21 @@ def test_lineup_says_when_a_dead_spot_cant_be_filled():
     text = render(build_report(snap, cfg()))
     # Only Late Pick A plays today, so three of the four starting spots are dead.
     assert "3 starting spots will score nothing (Star Guard: no game today), and nobody on your bench plays." in text
+
+
+def test_lineup_check_posts_each_change_once_a_day(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from fantasy_bot import __main__ as main
+    snap = scenario()
+    snap.lineup_slots = SLOTS
+    source = SimpleNamespace(lineup_snapshot=lambda: snap)
+    posted = []
+    monkeypatch.setattr(main, "post_to_discord", lambda url, text: posted.append(text))
+    c = cfg(discord_webhook="https://example.invalid/hook")
+    main.lineup_check(source, c, str(tmp_path), True)
+    main.lineup_check(source, c, str(tmp_path), True)
+    assert len(posted) == 1
+    assert "Star Guard: PG to bench (no game today)" in posted[0] and "Bench Guard: bench to PG" in posted[0]
+    snap.my_roster[2].injury_status = "OUT"  # a late scratch is new advice, so it goes out
+    main.lineup_check(source, c, str(tmp_path), True)
+    assert len(posted) == 2 and "Late Pick A: SG to bench (out)" in posted[1]

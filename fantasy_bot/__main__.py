@@ -9,10 +9,13 @@ import requests
 
 from . import hashtag
 from .config import Config, load_config
+from .history import Alerts, alert_key
+from .lineup import todays_lineup
 from .model import Snapshot
 from .opportunity import needs_game_logs
 from .recommend import build_report
-from .report import post_to_discord, render
+from .report import lineup_lines, lineup_needs_changes, post_to_discord, render
+from .scoring import Scorer
 
 
 def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
@@ -35,6 +38,9 @@ def main() -> None:
     ap.add_argument("--secrets", default="secrets.toml")
     ap.add_argument("--no-post", action="store_true", help="print only, skip Discord")
     ap.add_argument("--list-teams", action="store_true", help="print team ids and exit")
+    ap.add_argument("--lineup-only", action="store_true",
+                    help="just check today's lineup, and post only when there's a new change to make")
+    ap.add_argument("--data-dir", help="folder for run history and alert state (the workflows use the bot-data branch)")
     args = ap.parse_args()
 
     cfg = load_config(args.config, args.secrets)
@@ -47,15 +53,49 @@ def main() -> None:
             print(f"{t.team_id:>3}  {t.team_name}")
         return
 
+    post = bool(cfg.discord_webhook) and not args.no_post
+    if args.lineup_only:
+        lineup_check(source, cfg, args.data_dir, post)
+        return
+
     snap = source.snapshot()
     source.attach_game_logs(needs_game_logs(snap, cfg))
     if cfg.hashtag_enabled:
         add_hashtag_rankings(snap, cfg)
 
-    text = render(build_report(snap, cfg))
+    report = build_report(snap, cfg)
+    text = render(report)
     print(text)
-    if cfg.discord_webhook and not args.no_post:
+    if post:
         post_to_discord(cfg.discord_webhook, text)
+    if post or args.data_dir:
+        # The hourly lineup check shouldn't repeat what this report just said.
+        alerts = Alerts(args.data_dir, snap.period_dates.get(snap.today) or snap.now.date())
+        if lineup_needs_changes(report.lineup, cfg.lineup_min_gain) or report.lineup.warnings:
+            alerts.mark_sent(alert_key(report.lineup))
+
+
+def lineup_check(source, cfg: Config, data_dir, post: bool) -> None:
+    """Before tip-off: late scratches and rest days show up as OUT about an hour
+    before the game, after the daily report has gone out."""
+    snap = source.lineup_snapshot()
+    plan = todays_lineup(snap, cfg, Scorer(snap, cfg).base)
+    if not lineup_needs_changes(plan, cfg.lineup_min_gain) and not plan.warnings:
+        print("lineup check: nothing to change")
+        return
+    alerts = Alerts(data_dir, snap.period_dates.get(snap.today) or snap.now.date())
+    key = alert_key(plan)
+    if alerts.already_sent(key):
+        print("lineup check: already sent this one today")
+        return
+    stamp = f"{snap.now.hour % 12 or 12}:{snap.now:%M%p} ET" if snap.now else "before tip-off"
+    head = [f"**{snap.my_team_name}: lineup check** ({stamp})", ""]
+    text = "\n".join(head + lineup_lines(plan, cfg.lineup_min_gain))
+    print(text)
+    if post:
+        post_to_discord(cfg.discord_webhook, text)
+    if post or data_dir:
+        alerts.mark_sent(key)
 
 
 if __name__ == "__main__":

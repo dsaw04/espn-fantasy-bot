@@ -305,12 +305,36 @@ class EspnSource:
                 p.game_log = logs[p.id]
 
     # ---- public -----------------------------------------------------------
-    def snapshot(self) -> Snapshot:
+    def _my_team(self):
         lg = self.league
         mine = next((t for t in lg.teams if t.team_id == self.cfg.team_id), None)
         if mine is None:
             ids = ", ".join(f"{t.team_id}={t.team_name}" for t in lg.teams)
             raise SystemExit(f"team_id {self.cfg.team_id} not found. Teams: {ids}")
+        return mine
+
+    def lineup_snapshot(self) -> Snapshot:
+        """Just your roster today and the lineup slots: enough for the lineup check,
+        and a lot lighter than the full snapshot."""
+        mine = self._my_team()
+        settings = self.league.espn_request.league_get(params={"view": "mSettings"}).get("settings", {})
+        _, slots = self._league_settings(settings)
+        today = self.league.scoringPeriodId
+        return Snapshot(
+            today=today,
+            horizon=[today],
+            my_team_name=mine.team_name.strip(),
+            my_roster=self._my_roster(list(mine.roster)),
+            other_rostered=[],
+            free_agents=[],
+            period_dates=self._period_dates(),
+            lineup_slots=slots,
+            now=datetime.now(EASTERN),
+        )
+
+    def snapshot(self) -> Snapshot:
+        lg = self.league
+        mine = self._my_team()
 
         today = lg.scoringPeriodId
         last = lg.finalScoringPeriod or today + self.cfg.horizon_days
