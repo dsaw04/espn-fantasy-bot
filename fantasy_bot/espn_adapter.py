@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from espn_api.basketball import League
 from espn_api.basketball.constant import POSITION_MAP, PRO_TEAM_MAP, STATS_MAP
 from espn_api.basketball.player import Player
+from espn_api.requests.espn_requests import ESPNAccessDenied
 
 from .config import Config
 from .matchup import adds_limit, calendar, check_calendar
@@ -57,12 +58,20 @@ def _games_played(split: dict) -> int:
 class EspnSource:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.league = League(
-            league_id=cfg.league_id,
-            year=cfg.year,
-            espn_s2=cfg.espn_s2,
-            swid=cfg.swid,
-        )
+        try:
+            self.league = League(
+                league_id=cfg.league_id,
+                year=cfg.year,
+                espn_s2=cfg.espn_s2,
+                swid=cfg.swid,
+            )
+        except ESPNAccessDenied:
+            missing = [n for n, v in (("ESPN_S2", cfg.espn_s2), ("ESPN_SWID", cfg.swid)) if not v]
+            why = f"{' and '.join(missing)} not set" if missing else "the cookies were rejected, probably expired"
+            raise SystemExit(
+                f"ESPN refused access to league {cfg.league_id}: {why}. Private leagues need the espn_s2 and "
+                "SWID cookies, in secrets.toml locally or as repo secrets ESPN_S2 and ESPN_SWID in GitHub Actions."
+            ) from None
         scoring = (self.league.settings.scoring_type or "").upper()
         self.points_league = "POINTS" in scoring
         self._games_by_team = self._build_game_index()
