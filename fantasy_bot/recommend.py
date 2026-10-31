@@ -7,8 +7,9 @@ from statistics import median
 from typing import Dict, List, Optional, Set
 
 from .config import Config
-from .lineup import Week, project
-from .model import PlayerView, Snapshot, n_games
+from .lineup import Week
+from .matchup import Judge, Verdict
+from .model import MatchupState, PlayerView, Snapshot, n_games
 from .opportunity import Opportunity, fresh_injuries, opportunities
 from .scoring import Scorer, Valuation, availability_on
 
@@ -28,9 +29,12 @@ class Move:
     kind: str  # "stream": replaces a streaming spot on expected fpts; "core": a per game upgrade
     per_game: float  # what the add should score per game in his current role
     drop_per_game: float
-    gain: float  # how much the move raises your best lineups' total over the horizon
+    gain: float  # how much the move raises your best lineups' total over the days judged
     edge: float  # per game, add minus drop
     opportunity: Optional[Opportunity] = None  # the injury that opened his role, if any
+    win_gain: Optional[float] = None  # win chance added this week plus next, with a matchup
+    before: Optional[Verdict] = None
+    after: Optional[Verdict] = None
     add_starts: int = 0  # games the add would start over the horizon
     add_games: int = 0
     drop_starts: int = 0  # games the drop would have started
@@ -62,6 +66,9 @@ class Report:
     watchlist: List[Watch]
     streamers: Set[int] = field(default_factory=set)  # ids of the streaming spots
     week: Optional[Week] = None  # your best lineups over the horizon, before any move
+    outlook: Optional[Verdict] = None  # win chances before any move, with a matchup
+    matchup: Optional[MatchupState] = None
+    win_bar: float = 0.0  # win chance a streaming move had to add today
     per_game: Dict[int, float] = field(default_factory=dict)  # your players' per game value in their current role
     min_edge: float = 0.0
     stream_min_gain: float = 0.0
@@ -196,10 +203,10 @@ def _consistent(opp: Optional[Opportunity], drop: PlayerView, drop_per_game: flo
 
 
 def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
-    """Your weakest few players are streaming spots: anyone who raises your best lineups'
-    total over the horizon by stream_min_gain replaces them. Everyone else is core and only
-    moves for a consistent per game upgrade of min_edge, since acquisitions are limited."""
-    days = snap.move_days()
+    """Your weakest few players are streaming spots: anyone who adds enough to your chance
+    of winning this week and next replaces them (or, without a matchup, enough fpts over the
+    horizon). Everyone else is core and only moves for a consistent per game upgrade of
+    min_edge."""
     all_opps = opportunities(snap, cfg)
     opps_by_player: Dict[int, List[Opportunity]] = {}
     for o in all_opps:
@@ -207,16 +214,19 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
 
     # Your players get the same role based value a free agent would.
     value = {p.id: _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)[0] for p in snap.roster_for_moves()}
+    judge = Judge(snap, cfg, lambda p: value[p.id] if p.id in value else scorer.base(p))
+    days = judge.days
     roster = [scorer.value(p, days) for p in droppable(snap, cfg)]
     roster.sort(key=lambda v: value[v.player.id])
     streamers = {v.player.id for v in roster[: cfg.streaming_spots]}
     # Everyone you'd field, untouchables included.
     lineup = [(p, value[p.id]) for p in snap.roster_for_moves()]
-    week = before = project(lineup, days, snap, cfg)
+    verdict = before = judge(lineup)
+    bar = judge.bar()
 
     def swap(add: PlayerView, per_game: float, drop: Valuation):
         trial = [x for x in lineup if x[0].id != drop.player.id] + [(add, per_game)]
-        return trial, project(trial, days, snap, cfg)
+        return trial, judge(trial)
 
     candidates = []
     for p in snap.free_agents:
@@ -234,43 +244,46 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
     taken: Set[int] = set()
     bet_on: Set[int] = set()  # injured players a recommended add is already leaning on
     for expected, per_game, opp, add in candidates:
-        if len(moves) >= cfg.max_moves or not remaining:
+        if len(moves) >= judge.moves_allowed() or not remaining:
             break
         if opp and opp.injured.id in bet_on:
             continue  # don't stack two pickups on the same injury
         best: Optional[Move] = None
+        best_score = 0.0
         best_trial = None
-        # Streaming spots first, into whichever one raises the lineup total most. Adding a
-        # player can raise it by at most his own expected value, so skip hopeless ones.
-        if expected >= cfg.stream_min_gain:
+        # Streaming spots first, into whichever one the move helps most. On fpts, adding a
+        # player can gain at most his own expected value, so skip hopeless ones.
+        if expected > 0 and (judge.matchup is not None or expected >= bar):
             for drop in remaining:
                 if drop.player.id not in streamers:
                     continue
                 trial, after = swap(add.player, per_game, drop)
-                gain = after.total - week.total
-                if gain >= cfg.stream_min_gain and (best is None or gain > best.gain):
+                score = judge.gain(after, verdict)
+                if score >= bar and (best is None or score > best_score):
                     dv = value[drop.player.id]
-                    best = Move(add, drop, "stream", per_game, dv, gain, per_game - dv, opp)
-                    best_trial = (trial, after)
+                    best = Move(add, drop, "stream", per_game, dv, after.week.total - verdict.week.total, per_game - dv, opp)
+                    best_score, best_trial = score, (trial, after)
         # Core players only for a consistent per game upgrade, judged per game and not on the
         # next few days, so an injured regular is never dropped for being worth 0 this week.
-        if best is None:
+        if best is None and judge.moves_allowed() > 0:
             for drop in remaining:  # weakest per game first
                 dv = value[drop.player.id]
                 edge = per_game - dv
                 if drop.player.id not in streamers and edge >= cfg.min_edge and _consistent(opp, drop.player, dv):
                     trial, after = swap(add.player, per_game, drop)
-                    best = Move(add, drop, "core", per_game, dv, after.total - week.total, edge, opp)
-                    best_trial = (trial, after)
+                    best = Move(add, drop, "core", per_game, dv, after.week.total - verdict.week.total, edge, opp)
+                    best_score, best_trial = judge.gain(after, verdict), (trial, after)
                     break
         if best is None:
             continue
         trial, after = best_trial
-        best.add_starts, best.add_games = after.starts.get(add.player.id, 0), after.games.get(add.player.id, 0)
-        best.drop_starts = week.starts.get(best.drop.player.id, 0)
-        best.drop_games = week.games.get(best.drop.player.id, 0)
+        if judge.matchup is not None:
+            best.win_gain, best.before, best.after = best_score, verdict, after
+        best.add_starts, best.add_games = after.week.starts.get(add.player.id, 0), after.week.games.get(add.player.id, 0)
+        best.drop_starts = verdict.week.starts.get(best.drop.player.id, 0)
+        best.drop_games = verdict.week.games.get(best.drop.player.id, 0)
         best.reasons = _reasons(best, len(days), snap.scoring)
-        lineup, week = trial, after  # the next move builds on this one
+        lineup, verdict = trial, after  # the next move builds on this one
         moves.append(best)
         if opp:
             bet_on.add(opp.injured.id)
@@ -296,23 +309,26 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
                 est = scorer.base(p) + boost
                 watch.append(Watch(p, inj, est, 0, est - weakest))
     watch.sort(key=lambda w: w.per_game, reverse=True)
-    return moves, roster, streamers, watch[:5], before, value
+    return moves, roster, streamers, watch[:5], before, value, judge
 
 
 def build_report(snap: Snapshot, cfg: Config) -> Report:
     scorer = Scorer(snap, cfg)
-    moves, roster, streamers, watch, week, value = waiver_moves(snap, cfg, scorer)
+    moves, roster, streamers, watch, before, value, judge = waiver_moves(snap, cfg, scorer)
     return Report(
         team_name=snap.my_team_name,
         today=snap.today,
-        horizon_days=len(snap.move_days()),
+        horizon_days=len(judge.days),
         injured_on_roster=[p for p in snap.roster_for_moves() if p.is_out or p.is_risky],
         swaps=lineup_swaps(snap, cfg, scorer),
         moves=moves,
         roster=roster,
         watchlist=watch,
         streamers=streamers,
-        week=week,
+        week=before.week,
+        outlook=before if judge.matchup is not None else None,
+        matchup=judge.matchup,
+        win_bar=judge.bar() if judge.matchup is not None else 0.0,
         per_game=value,
         min_edge=cfg.min_edge,
         stream_min_gain=cfg.stream_min_gain,

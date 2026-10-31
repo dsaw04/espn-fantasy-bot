@@ -36,6 +36,10 @@ class Config:
     streaming_spots: int = 2
     stream_min_gain: float = 10.0
     min_edge: float = 4.0  # an add must out-score a core player by this many fpts per game
+    # With a matchup to look at, streaming moves are judged by the win chance they add
+    # this week and next (0.03 = 3 points), instead of stream_min_gain fpts.
+    min_win_gain: float = 0.03
+    projection_error: float = 0.15  # how far off a per game value typically is, as a share
     min_games_without: int = 3  # games a backup must have played without the injured starter
     free_agent_pool: int = 300
     min_minutes_for_depth: float = 18.0  # an injured player must play this much to matter
@@ -85,6 +89,8 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         streaming_spots=int(bot.get("streaming_spots", 2)),
         stream_min_gain=float(bot.get("stream_min_gain", 10.0)),
         min_edge=float(bot.get("min_edge", 4.0)),
+        min_win_gain=float(bot.get("min_win_gain", 0.03)),
+        projection_error=float(bot.get("projection_error", 0.15)),
         min_games_without=int(bot.get("min_games_without", 3)),
         free_agent_pool=int(bot.get("free_agent_pool", 300)),
         min_minutes_for_depth=float(bot.get("min_minutes_for_depth", 18.0)),

@@ -16,7 +16,8 @@ from espn_api.basketball.constant import POSITION_MAP, PRO_TEAM_MAP, STATS_MAP
 from espn_api.basketball.player import Player
 
 from .config import Config
-from .model import GameLog, PlayerView, Snapshot
+from .matchup import adds_limit, calendar, check_calendar
+from .model import GameLog, MatchupState, PlayerView, Side, Snapshot
 
 EASTERN = ZoneInfo("America/New_York")  # NBA game days are US Eastern days
 ABBREV_TO_ID = {abbrev: tid for tid, abbrev in PRO_TEAM_MAP.items() if isinstance(tid, int)}
@@ -124,9 +125,15 @@ class EspnSource:
             percent_owned=pct,
         )
 
-    def _league_settings(self):
+    def _league_state(self) -> dict:
+        """One request for the settings, every team's transaction counts and the matchup scores."""
+        return self.league.espn_request.league_get(
+            params={"view": ["mSettings", "mTeam", "mMatchupScore"], "scoringPeriodId": self.league.scoringPeriodId}
+        )
+
+    @staticmethod
+    def _league_settings(settings: dict):
         """Points per stat, keyed like espn-api's stat names, and lineup slot counts."""
-        settings = self.league.espn_request.league_get(params={"view": "mSettings"}).get("settings", {})
         scoring: Dict[str, float] = {}
         for it in settings.get("scoringSettings", {}).get("scoringItems", []):
             name = STATS_MAP.get(str(it.get("statId")))
@@ -138,6 +145,53 @@ class EspnSource:
             if name and n:
                 slots[name] = int(n)
         return scoring, slots
+
+    def _matchup(self, data: dict, my_name: str, my_roster: List[PlayerView],
+                 rosters: Dict[int, List[PlayerView]], names: Dict[int, str]) -> Optional[MatchupState]:
+        """This week's matchup and next week's opponent, or None if there isn't one."""
+        status, settings = data.get("status", {}), data.get("settings", {})
+        mp = status.get("currentMatchupPeriod") or getattr(self.league, "currentMatchupPeriod", 0)
+        weeks = {int(k): v for k, v in settings.get("scheduleSettings", {}).get("matchupPeriods", {}).items()}
+        if not mp or not weeks:
+            return None
+        first = status.get("firstScoringPeriod") or 1
+        last = status.get("finalScoringPeriod") or self.league.finalScoringPeriod
+        cal = calendar(first, last, self._period_dates(), weeks)
+        check_calendar(cal, getattr(self.league, "matchup_ids", {}))
+
+        me = self.cfg.team_id
+
+        def game(period: int):
+            """(my score, their team id, their score) in that matchup, None on a bye."""
+            for m in data.get("schedule", []):
+                if m.get("matchupPeriodId") != period:
+                    continue
+                home, away = m.get("home", {}), m.get("away", {})
+                if me not in (home.get("teamId"), away.get("teamId")):
+                    continue
+                mine, theirs = (home, away) if home.get("teamId") == me else (away, home)
+                if not theirs.get("teamId"):
+                    return None
+                pts = lambda t: float(t["totalPointsLive"] if t.get("totalPointsLive") is not None else t.get("totalPoints") or 0)
+                return pts(mine), theirs["teamId"], pts(theirs)
+            return None
+
+        now = game(mp)
+        if now is None or not cal.get(mp):
+            return None
+        team = next((t for t in data.get("teams", []) if t.get("id") == me), {})
+        used = team.get("transactionCounter", {}).get("matchupAcquisitionTotals", {}).get(str(mp), 0)
+        nxt = game(mp + 1)
+        return MatchupState(
+            period=mp,
+            days=cal[mp],
+            me=Side(my_name, now[0], my_roster),
+            opp=Side(names.get(now[1], "your opponent"), now[2], rosters.get(now[1], [])),
+            next_days=cal.get(mp + 1, []),
+            next_opp=Side(names.get(nxt[1], "next opponent"), 0.0, rosters.get(nxt[1], [])) if nxt else None,
+            adds_limit=adds_limit(settings.get("acquisitionSettings", {}), len(cal[mp])),
+            adds_used=int(used),
+        )
 
     def _stat_filter(self) -> List[str]:
         y = self.cfg.year
@@ -267,11 +321,19 @@ class EspnSource:
         next_roster = [views[p.playerId] for p in upcoming] if upcoming is not None else None
         move_horizon = [sp for sp in range(today + 1, today + 1 + self.cfg.horizon_days) if sp <= last]
 
-        others = [self._view(p, "other") for t in lg.teams if t is not mine for p in t.roster]
+        rosters: Dict[int, List[PlayerView]] = {}
+        for t in lg.teams:
+            if t is not mine:
+                rosters[t.team_id] = [self._view(p, "other") for p in t.roster]
+                for v in rosters[t.team_id]:
+                    v.team_id = t.team_id
+        others = [v for r in rosters.values() for v in r]
         # The free agent list already shows today's drops and hides today's adds,
         # so leave out anyone on either version of my roster.
         rostered = set(views) | {p.id for p in others}
-        scoring, slots = self._league_settings()
+        state = self._league_state()
+        scoring, slots = self._league_settings(state.get("settings", {}))
+        names = {t.team_id: t.team_name.strip() for t in lg.teams}
         return Snapshot(
             today=today,
             horizon=horizon,
@@ -284,4 +346,6 @@ class EspnSource:
             move_horizon=move_horizon if next_roster is not None else [],
             scoring=scoring if self.points_league else {},
             lineup_slots=slots,
+            matchup=self._matchup(state, mine.team_name.strip(), my_roster, rosters, names),
+            now=datetime.now(EASTERN),
         )

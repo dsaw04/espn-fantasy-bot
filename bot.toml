@@ -11,11 +11,14 @@ team_id = 3                # run `python -m fantasy_bot --list-teams` to find yo
 # Names must match ESPN spelling.
 untouchable = ["Cade Cunningham", "Cooper Flagg"]
 
-horizon_days = 7           # how many days ahead to count games
-max_moves = 2              # most add/drop suggestions per day
-streaming_spots = 2        # your weakest N players rotate whenever someone beats them...
-stream_min_gain = 10.0     # ...by this many fpts over the horizon
+max_moves = 2              # most add/drop suggestions per day (never more than the adds you have left)
+streaming_spots = 2        # your weakest N players rotate whenever a pickup...
+min_win_gain = 0.03        # ...adds this much to your chance of winning this week plus next (0.03 = 3 points)
+projection_error = 0.15    # how far off a per game estimate typically is; widens the win chance spread
 min_edge = 4.0             # everyone else is core: an add must out-score them by this many fpts per game
+# Without matchup data (category leagues, byes) streaming falls back to fpts:
+horizon_days = 7           # days ahead to count games
+stream_min_gain = 10.0     # fpts a pickup must add over the horizon
 min_games_without = 3      # games a backup must have played without the injured starter to count his new role
 free_agent_pool = 300      # how many free agents to scan, by ownership
 min_minutes_for_depth = 18 # an injured player must average this to open up a role

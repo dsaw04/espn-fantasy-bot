@@ -204,7 +204,7 @@ def test_needs_enough_games_without_the_starter_to_use_his_new_role():
 def test_holds_when_nobody_clears_either_bar():
     r = build_report(scenario(), cfg(min_edge=1000, stream_min_gain=1000))
     assert r.moves == []
-    assert "Hold. Nobody beats your streaming spots (Late Pick A and Old Stream)" in render(r)
+    assert "Hold. No pickup over your streaming spots (Late Pick A and Old Stream) beats them by 1000+ fpts" in render(r)
 
 
 def test_fresh_injury_shows_up_as_an_estimate_on_the_watch_list():
@@ -341,7 +341,7 @@ def test_snapshot_end_to_end_with_fake_league():
             return {"players": [r for r in (mine_raw, added_raw, starter, fa_raw) if r["id"] in ids]}
 
         def league_get(self, params=None, headers=None, extend=""):
-            if params.get("view") == "mSettings":
+            if "mSettings" in params.get("view"):
                 items = [{"statId": 0, "points": 1.0}, {"statId": 2, "points": 4.0}, {"statId": 11, "points": -2.0}]
                 return {"settings": {"scoringSettings": {"scoringItems": items}}}
             if params.get("view") == "mRoster":
@@ -445,3 +445,123 @@ def test_your_own_backup_keeps_his_role_value_after_you_add_him():
     r = build_report(snap, cfg())
     assert r.per_game[backup.id] == 32  # not his blended 15, so he isn't churned straight back out
     assert backup.id not in r.streamers
+
+
+# ---- matchups ----------------------------------------------------------------
+from fantasy_bot.lineup import project
+from fantasy_bot.matchup import Judge, adds_limit, calendar, win_prob
+from fantasy_bot.model import MatchupState, Side
+
+
+def test_calendar_merges_the_all_star_break_not_late_scheduled_december_weeks():
+    start = date(2026, 12, 7)  # a Monday
+    days = {sp: start + timedelta(days=sp - 1) for sp in range(1, 85)}  # 12 calendar weeks
+    cup = {date(2026, 12, d) for d in range(8, 13)}  # NBA Cup week, not scheduled yet
+    all_star = {date(2027, 2, d) for d in range(19, 25)}
+    played = {sp: d for sp, d in days.items() if d not in cup and d not in all_star}
+    weeks = {m: [m] for m in range(1, 10)}
+    weeks[10] = [10, 11]  # a two week playoff round
+    cal = calendar(1, 84, played, weeks)
+    assert cal[1] == list(range(1, 8))  # December's gap didn't merge anything
+    assert len(cal[10]) == 21  # Feb 8-14, then Feb 15-28 as one All-Star week
+    assert days[cal[10][-1]] == date(2027, 2, 28)
+
+
+def test_adds_limit_is_per_day_of_the_matchup():
+    acq = {"matchupAcquisitionLimit": 1.0, "matchupLimitPerScoringPeriod": True}
+    assert adds_limit(acq, 7) == 7 and adds_limit(acq, 14) == 14
+    assert adds_limit({"matchupAcquisitionLimit": 5, "matchupLimitPerScoringPeriod": False}, 7) == 5
+    assert adds_limit({"matchupAcquisitionLimit": -1}, 7) == -1
+
+
+def test_win_prob():
+    assert win_prob(0, 100) == 0.5
+    assert win_prob(100, 100**2) == pytest.approx(0.841, abs=0.001)
+    assert win_prob(100, 50**2) > win_prob(100, 100**2)  # less spread, safer lead
+
+
+def rivals():
+    opp = [pv(60 + i, f"Rival {i}", "BOS", 2, G, 30, 30, [10, 11, 12], owner="other") for i in range(3)]
+    nxt = [pv(70 + i, f"Next {i}", "BOS", 2, G, 30, 30, [13, 14], owner="other") for i in range(3)]
+    return opp, nxt
+
+
+def with_matchup(snap, me=500.0, them=480.0, used=0, limit=7):
+    opp, nxt = rivals()
+    snap.other_rostered += opp + nxt
+    snap.matchup = MatchupState(
+        period=2, days=[6, 7, 8, 9, 10, 11, 12], me=Side("Mine", me, snap.my_roster),
+        opp=Side("Rival", them, opp), next_days=[13, 14], next_opp=Side("Next Rival", 0.0, nxt),
+        adds_limit=limit, adds_used=used,
+    )
+    return snap
+
+
+def test_report_shows_both_matchups_and_win_chances():
+    r = build_report(with_matchup(scenario()), cfg())
+    assert 0 < r.outlook.now.win < 1 and 0 < r.outlook.next.win < 1
+    text = render(r)
+    assert "**This week vs Rival**: 500 to 480" in text
+    assert "7 of 7 adds left" in text and "**Next week vs Next Rival**" in text
+    m = next(m for m in r.moves if m.kind == "stream")
+    assert m.win_gain > 0 and "this week" in render(r)
+
+
+def test_a_decided_week_judges_pickups_on_next_week():
+    r = build_report(with_matchup(scenario(), me=0.0, them=5000.0), cfg())
+    assert r.outlook.now.win < 0.001
+    assert "all but decided" in render(r)
+    assert r.moves
+    for m in r.moves:
+        assert m.after.now.win - m.before.now.win == pytest.approx(0, abs=1e-6)
+        assert m.win_gain == pytest.approx(m.after.next.win - m.before.next.win, abs=1e-6)
+
+
+def test_no_moves_once_the_matchups_adds_are_used():
+    r = build_report(with_matchup(scenario(), used=7), cfg())
+    assert r.moves == []
+    assert "Out of adds: all 7 used this matchup" in render(r)
+
+
+def test_bar_drops_when_adds_would_go_unused_and_rises_when_scarce():
+    snap = with_matchup(scenario(), used=3)  # 4 adds left, 2 days left after today
+    judge = Judge(snap, cfg(), lambda p: 20.0)
+    assert judge.bar() == pytest.approx(0.03 * 0.5)
+    snap.matchup.adds_used = 6  # 1 left
+    assert judge.bar() == pytest.approx(0.03 * 2)
+    assert judge.moves_allowed() == 1
+
+
+def test_games_already_started_are_left_out_of_the_projection():
+    snap = scenario()
+    bench_guard = next(p for p in snap.my_roster if p.name == "Bench Guard")  # plays 10, 11, 12
+    week = project([(bench_guard, 25.0)], [10, 11], snap, cfg(), now=bench_guard.games[10])
+    assert week.games == {bench_guard.id: 1} and week.total == 25.0
+
+
+def test_adapter_reads_the_matchup_scores_opponents_and_adds():
+    from types import SimpleNamespace
+    src = object.__new__(EspnSource)
+    src.cfg = cfg()
+    src._games_by_team = {13: games(*range(1, 15))}  # Oct 19 (a Monday) to Nov 1
+    src.league = SimpleNamespace(finalScoringPeriod=14, matchup_ids={1: ["1", "2"]})
+    data = {
+        "status": {"currentMatchupPeriod": 2, "firstScoringPeriod": 1, "finalScoringPeriod": 14},
+        "settings": {
+            "scheduleSettings": {"matchupPeriods": {"1": [1], "2": [2]}},
+            "acquisitionSettings": {"matchupAcquisitionLimit": 1.0, "matchupLimitPerScoringPeriod": True},
+        },
+        "teams": [{"id": 1, "transactionCounter": {"matchupAcquisitionTotals": {"1": 2, "2": 4}}}],
+        "schedule": [
+            {"matchupPeriodId": 2, "home": {"teamId": 7, "totalPoints": 901.0, "totalPointsLive": 1188.0},
+             "away": {"teamId": 1, "totalPoints": 681.0, "totalPointsLive": 946.0}},
+            {"matchupPeriodId": 3, "home": {"teamId": 1, "totalPoints": 0.0}, "away": {"teamId": 6, "totalPoints": 0.0}},
+        ],
+    }
+    mine = [pv(1, "Me", "LAL", 13, G, 30, 30, [8])]
+    rosters = {7: [pv(2, "Them", "LAL", 13, G, 30, 30, [8])], 6: []}
+    m = src._matchup(data, "Mine", mine, rosters, {7: "Fungus", 6: "Kyan"})
+    assert m.days == list(range(8, 15))  # Monday Oct 26 to Sunday Nov 1
+    assert (m.me.score, m.opp.score, m.opp.name) == (946.0, 1188.0, "Fungus")
+    assert m.opp.roster[0].name == "Them" and m.next_opp.name == "Kyan"
+    assert (m.adds_limit, m.adds_used, m.adds_left) == (7, 4, 3)
