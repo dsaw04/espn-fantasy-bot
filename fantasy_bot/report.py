@@ -53,6 +53,9 @@ def render(r: Report) -> str:
     lines: List[str] = [f"**{r.team_name}: daily scout** (scoring period {r.today}, looking {ahead})", ""]
     if r.matchup and r.outlook:
         lines += _matchup_lines(r)
+    if r.open_spots:
+        days = ", ".join(f"{d:%a %b} {d.day}: {n}" for d, n in r.open_spots)
+        lines += [f"**Empty lineup spots** (streamers score most here): {days}", ""]
 
     lines.append("**Injury report (your roster)**")
     if r.injured_on_roster:

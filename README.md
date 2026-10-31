@@ -68,6 +68,10 @@ So a move is worth what it does to your chances:
 - **A decided week** (under 2% or over 98%) can't be swung, so pickups are judged on next week alone.
 - **Adds expire** when the matchup ends. ESPN allows 1 per day of the matchup (7 a week, 14 in a two week playoff round). With more adds left than days, the bar halves so they get used; down to your last one early in the week, it doubles. With none left the report says so and suggests nothing.
 
+The report also lists the days your best lineup leaves starting spots empty. Those are the days a streamer scores the most, and the per move values already count them.
+
+Players on waivers only count from the day their claim clears.
+
 ESPN doesn't publish future matchup dates. Matchups follow its Monday to Sunday weeks, with the All-Star break week and the one after it merged, which the bot finds as the longest stretch without games from January on.
 
 ## Setup
@@ -118,5 +122,6 @@ Tests run on simulated league data, including a fake espn-api League, so they ne
 
 - ESPN's injury designations lag official NBA reports by a bit, so check late scratches before lock.
 - Game logs show who has stepped up, but the first game or two after an injury is a small sample. The bot doesn't read beat reporter news about who is actually starting.
+- The bot assumes an add counts against the matchup you make it in. If ESPN counts it against the matchup it takes effect in, a Sunday add is really one of next week's.
 - ESPN usually has no return date for injured players, so the bot can't tell a 3-day absence from a 3-week one.
 - espn-api is unofficial and ESPN occasionally changes its endpoints. If a run breaks, update with `pip install -U espn-api`.

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from statistics import median
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from .config import Config
 from .lineup import Week
@@ -69,6 +70,8 @@ class Report:
     outlook: Optional[Verdict] = None  # win chances before any move, with a matchup
     matchup: Optional[MatchupState] = None
     win_bar: float = 0.0  # win chance a streaming move had to add today
+    # (day, starting slots your best lineup leaves empty) over the coming days, before any move
+    open_spots: List[Tuple[date, int]] = field(default_factory=list)
     per_game: Dict[int, float] = field(default_factory=dict)  # your players' per game value in their current role
     min_edge: float = 0.0
     stream_min_gain: float = 0.0
@@ -120,6 +123,8 @@ def lineup_swaps(snap: Snapshot, cfg: Config, scorer: Scorer) -> List[LineupSwap
     return swaps
 
 
+OPEN_DAYS_SHOWN = 7
+
 HASHTAG_WINDOWS = (("last_14", "last 14 days"), ("season", "season"), ("last_7", "last 7 days"))
 
 
@@ -170,6 +175,8 @@ def _reasons(m: Move, horizon: int, scoring: Dict[str, float]) -> List[str]:
         r.append(f"expect ~{opp.with_him.avg:.0f} fpts/g again once {opp.injured.name} returns")
     if a.is_risky:
         r.append(f"note: {a.name} is listed {a.status_label()}")
+    if a.available_from:
+        r.append(f"he's on waivers: put in a claim, and he's yours from {a.available_from:%b %d}")
     if (ht := _hashtag_reason(a, d, scoring)) is not None:
         r.append(ht)
     return r
@@ -329,6 +336,8 @@ def build_report(snap: Snapshot, cfg: Config) -> Report:
         outlook=before if judge.matchup is not None else None,
         matchup=judge.matchup,
         win_bar=judge.bar() if judge.matchup is not None else 0.0,
+        open_spots=[(snap.period_dates[sp], n) for sp, n in sorted(before.week.open.items())[:OPEN_DAYS_SHOWN]
+                    if n > 0 and sp in snap.period_dates],
         per_game=value,
         min_edge=cfg.min_edge,
         stream_min_gain=cfg.stream_min_gain,

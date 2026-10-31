@@ -252,9 +252,14 @@ class EspnSource:
         out = []
         for raw in data.get("players", []):
             try:
-                out.append(self._view(Player(raw, self.cfg.year), "fa", raw))
+                v = self._view(Player(raw, self.cfg.year), "fa", raw)
             except (KeyError, TypeError):
                 continue  # skip malformed entries rather than failing the whole run
+            if raw.get("status") == "WAIVERS" and raw.get("waiverProcessDate"):
+                # Claims process early in the morning, Eastern, and he can play that day.
+                clears = datetime.fromtimestamp(raw["waiverProcessDate"] / 1000.0, tz=timezone.utc)
+                v.available_from = clears.astimezone(EASTERN).date()
+            out.append(v)
         return out
 
     SINGLE_GAME = 5  # statSplitTypeId of a one-game stat line

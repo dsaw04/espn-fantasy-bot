@@ -67,6 +67,8 @@ class PlayerView:
     acquisition_type: str = ""
     owner: str = "fa"  # "me", "other" or "fa"
     team_id: int = 0  # fantasy team that owns him, 0 for free agents
+    # On waivers: the first day a claim put in now would have him on your roster.
+    available_from: Optional[date] = None
     percent_owned: float = 0.0
     # Hashtag Basketball rankings by window: "season", "last_7", "last_14", "last_30"
     hashtag: Dict[str, HashtagLine] = field(default_factory=dict)

@@ -565,3 +565,22 @@ def test_adapter_reads_the_matchup_scores_opponents_and_adds():
     assert (m.me.score, m.opp.score, m.opp.name) == (946.0, 1188.0, "Fungus")
     assert m.opp.roster[0].name == "Them" and m.next_opp.name == "Kyan"
     assert (m.adds_limit, m.adds_used, m.adds_left) == (7, 4, 3)
+
+
+def test_waiver_player_counts_only_from_the_day_his_claim_clears():
+    snap = scenario()
+    backup = fa(snap, 30)  # Lakers Backup C, plays 10-13
+    backup.available_from = DATES[12]
+    week = project([(backup, 30.0)], [11, 12, 13], snap, cfg())
+    assert week.games == {backup.id: 2}
+    r = build_report(snap, cfg())
+    m = next(m for m in r.moves if m.add.player.id == backup.id)
+    assert any("on waivers" in x for x in m.reasons)
+
+
+def test_report_lists_days_with_empty_lineup_spots():
+    snap = scenario()
+    snap.lineup_slots = {"PG": 1, "SG": 1, "C": 1, "UT": 2, "BE": 3}
+    r = build_report(snap, cfg())
+    assert r.open_spots and all(n > 0 for _, n in r.open_spots)
+    assert "**Empty lineup spots**" in render(r)

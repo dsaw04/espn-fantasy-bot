@@ -58,6 +58,8 @@ def is_out_on(p: PlayerView, day: Optional[date]) -> bool:
 def availability_on(p: PlayerView, day: Optional[date], cfg: Config) -> float:
     if is_out_on(p, day):
         return 0.0
+    if p.available_from is not None and day is not None and day < p.available_from:
+        return 0.0  # still on waivers
     if p.is_risky:
         return cfg.dtd_availability
     return 1.0
