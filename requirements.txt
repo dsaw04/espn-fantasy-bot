@@ -1,3 +1,5 @@
 espn-api>=0.45
 requests>=2.31
+lxml>=5
+tzdata; sys_platform == "win32"
 pytest>=8

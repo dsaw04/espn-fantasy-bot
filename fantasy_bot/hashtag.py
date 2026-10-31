@@ -174,7 +174,8 @@ def _parse_row(tds, columns: List[str]) -> HashtagLine:
         line.stats[cat] = _num(_shown(td))
         z = _zscore(td)
         if z is not None:
-            line.zscores[cat] = z
+            # Hashtag scores turnovers as "more is higher". Flip so every category reads higher = better.
+            line.zscores[cat] = -z if cat == "TO" else z
         if cat in ("FG%", "FT%"):  # "(9.3/18.0)" under the percentage
             made_att = re.search(r"\(([\d.]+)/([\d.]+)\)", td.text_content())
             if made_att:
@@ -223,13 +224,19 @@ def updated_on(root) -> Optional[date]:
 
 # ---- joining onto ESPN players ----------------------------------------------
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+# Hashtag spelling -> ESPN spelling, both as name keys, for names normalising can't fix
+ALIASES = {
+    "alexandre sarr": "alex sarr",
+    "ron holland": "ronald holland",
+}
 
 
 def name_key(name: str) -> str:
     """'Nikola Jokić' and 'Nikola Jokic' match, so do 'Michael Porter Jr.' and 'Michael Porter'."""
     s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     s = re.sub(r"[.'`]", "", s)
-    return " ".join(p for p in re.split(r"[^a-z0-9]+", s) if p and p not in _SUFFIXES)
+    key = " ".join(p for p in re.split(r"[^a-z0-9]+", s) if p and p not in _SUFFIXES)
+    return ALIASES.get(key, key)
 
 
 def attach(players: Iterable[PlayerView], rankings: Rankings) -> int:
