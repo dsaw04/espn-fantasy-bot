@@ -45,6 +45,7 @@ class Config:
     min_minutes_for_depth: float = 18.0  # an injured player must play this much to matter
     absorb_rate: float = 0.5  # share of an injured player's output that flows to backups
     dtd_availability: float = 0.6  # chance a day-to-day player suits up
+    lineup_min_gain: float = 2.0  # fpts a better lineup must add today before the bot says to change it
 
     weights: Weights = field(default_factory=Weights)
     discord_webhook: Optional[str] = None
@@ -96,6 +97,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         min_minutes_for_depth=float(bot.get("min_minutes_for_depth", 18.0)),
         absorb_rate=float(bot.get("absorb_rate", 0.5)),
         dtd_availability=float(bot.get("dtd_availability", 0.6)),
+        lineup_min_gain=float(bot.get("lineup_min_gain", 2.0)),
         weights=Weights(**{k: float(v) for k, v in w.items()}),
         discord_webhook=env("DISCORD_WEBHOOK_URL", bot.get("discord_webhook")),
         hashtag_enabled=bool(htb.get("enabled", True)),

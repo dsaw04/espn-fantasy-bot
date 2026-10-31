@@ -24,6 +24,7 @@ free_agent_pool = 300      # how many free agents to scan, by ownership
 min_minutes_for_depth = 18 # an injured player must average this to open up a role
 absorb_rate = 0.5          # share of an injured player's production backups pick up
 dtd_availability = 0.6     # how much to discount day-to-day players
+lineup_min_gain = 2.0      # fpts a better lineup must add today before the bot says to change yours
 
 [hashtag]
 # Scrapes hashtagbasketball.com/fantasy-basketball-rankings (free, every player)

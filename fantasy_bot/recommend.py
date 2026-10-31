@@ -8,19 +8,11 @@ from statistics import median
 from typing import Dict, List, Optional, Set, Tuple
 
 from .config import Config
-from .lineup import Week
+from .lineup import TodayPlan, Week, todays_lineup
 from .matchup import Judge, Verdict
 from .model import MatchupState, PlayerView, Snapshot, n_games
 from .opportunity import Opportunity, fresh_injuries, opportunities
 from .scoring import Scorer, Valuation, availability_on
-
-
-@dataclass
-class LineupSwap:
-    slot: str
-    bench: PlayerView  # the starter coming out
-    start: Optional[PlayerView]  # the bench player going in, if any
-    reason: str
 
 
 @dataclass
@@ -61,7 +53,7 @@ class Report:
     today: int
     horizon_days: int
     injured_on_roster: List[PlayerView]
-    swaps: List[LineupSwap]
+    lineup: TodayPlan
     moves: List[Move]
     roster: List[Valuation]  # everyone you could drop, weakest per game first
     watchlist: List[Watch]
@@ -74,6 +66,7 @@ class Report:
     open_spots: List[Tuple[date, int]] = field(default_factory=list)
     per_game: Dict[int, float] = field(default_factory=dict)  # your players' per game value in their current role
     min_edge: float = 0.0
+    lineup_min_gain: float = 0.0
     stream_min_gain: float = 0.0
     moves_start_tomorrow: bool = False
 
@@ -86,41 +79,6 @@ def droppable(snap: Snapshot, cfg: Config) -> List[PlayerView]:
     """Everyone on the roster a move would change, except the untouchables."""
     safe = {_norm(n) for n in cfg.untouchable}
     return [p for p in snap.roster_for_moves() if _norm(p.name) not in safe]
-
-
-def lineup_swaps(snap: Snapshot, cfg: Config, scorer: Scorer) -> List[LineupSwap]:
-    """Starters who won't score today, and the best bench player to slide in."""
-    today = snap.today
-    day = snap.period_dates.get(today)
-    starters = [p for p in snap.my_roster if p.is_starting_slot]
-    bench = [p for p in snap.my_roster if p.lineup_slot == "BE"]
-    used: Set[int] = set()
-    swaps: List[LineupSwap] = []
-
-    def bench_options(slot: str):
-        opts = [
-            b
-            for b in bench
-            if b.id not in used
-            and today in b.games
-            and availability_on(b, day, cfg) > 0
-            and slot in b.eligible_slots
-        ]
-        return sorted(opts, key=lambda b: scorer.base(b) * availability_on(b, day, cfg), reverse=True)
-
-    for s in starters:
-        if today not in s.games:
-            reason = "no game today"
-        elif availability_on(s, day, cfg) == 0:
-            reason = s.status_label()
-        else:
-            continue
-        opts = bench_options(s.lineup_slot)
-        pick = opts[0] if opts else None
-        if pick:
-            used.add(pick.id)
-        swaps.append(LineupSwap(s.lineup_slot, s, pick, reason))
-    return swaps
 
 
 OPEN_DAYS_SHOWN = 7
@@ -327,7 +285,8 @@ def build_report(snap: Snapshot, cfg: Config) -> Report:
         today=snap.today,
         horizon_days=len(judge.days),
         injured_on_roster=[p for p in snap.roster_for_moves() if p.is_out or p.is_risky],
-        swaps=lineup_swaps(snap, cfg, scorer),
+        lineup=todays_lineup(snap, cfg, lambda p: value[p.id] if p.id in value else scorer.base(p)),
+        lineup_min_gain=cfg.lineup_min_gain,
         moves=moves,
         roster=roster,
         watchlist=watch,

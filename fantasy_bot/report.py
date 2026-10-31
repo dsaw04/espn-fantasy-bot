@@ -7,6 +7,7 @@ from typing import List
 import requests
 
 from .model import n_games
+from .lineup import TodayPlan
 from .recommend import Report
 
 
@@ -48,6 +49,36 @@ def _win_change(m) -> str:
     return ", ".join(parts) or "no change to your win chances"
 
 
+def _slot(s: str) -> str:
+    return "bench" if s == "BE" else s
+
+
+def lineup_needs_changes(plan: TodayPlan, min_gain: float) -> bool:
+    """Worth telling you about: it adds enough today, or it benches a starter who won't score."""
+    if plan.gain <= 0:
+        return False
+    zero = any(c.new == "BE" and c.reason and c.reason != "others score more" for c in plan.changes)
+    return plan.gain >= min_gain or zero
+
+
+def lineup_lines(plan: TodayPlan, min_gain: float) -> List[str]:
+    lines = [f"- {w}" for w in plan.warnings]
+    if lineup_needs_changes(plan, min_gain):
+        lines.insert(0, f"**Set your lineup today** (~{plan.gain:+.0f} fpts)")
+        for c in plan.changes:
+            why = f" ({c.reason})" if c.reason else ""
+            lines.append(f"- {c.player.name}: {_slot(c.old)} to {_slot(c.new)}{why}")
+    elif plan.idle:
+        who = "; ".join(f"{p.name}: {why}" for p, why in plan.idle)
+        lines.insert(0, f"**Lineup today**: {plan.empty} starting {'spot' if plan.empty == 1 else 'spots'} "
+                        f"will score nothing ({who}), and nobody on your bench plays.")
+    elif lines:
+        lines.insert(0, "**Lineup today**")
+    else:
+        lines.append("**Lineup today**: set. No changes needed.")
+    return lines + [""]
+
+
 def render(r: Report) -> str:
     ahead = "the rest of this week and next" if r.matchup else f"{r.horizon_days} days ahead"
     lines: List[str] = [f"**{r.team_name}: daily scout** (scoring period {r.today}, looking {ahead})", ""]
@@ -65,16 +96,7 @@ def render(r: Report) -> str:
         lines.append("- Everyone is healthy.")
     lines.append("")
 
-    lines.append("**Lineup swaps for today**")
-    if r.swaps:
-        for s in r.swaps:
-            if s.start:
-                lines.append(f"- {s.slot}: sit {s.bench.name} ({s.reason}), start {s.start.name}")
-            else:
-                lines.append(f"- {s.slot}: {s.bench.name} won't score ({s.reason}) and nobody on your bench can fill it.")
-    else:
-        lines.append("- Your starters all play today. No changes needed.")
-    lines.append("")
+    lines += lineup_lines(r.lineup, r.lineup_min_gain)
 
     lines.append("**Pickups** (adds play from tomorrow)" if r.moves_start_tomorrow else "**Pickups**")
     if r.moves:

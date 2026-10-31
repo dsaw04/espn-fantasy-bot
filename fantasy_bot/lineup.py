@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .config import Config
 from .model import PlayerView, Snapshot
@@ -41,12 +41,28 @@ def _place(i: int, fits: List[List[int]], owner: List[Optional[int]], seen: Set[
     return False
 
 
+def assign(
+    players: Sequence[Tuple[PlayerView, float]], slots: List[str], prefer: Optional[Dict[int, str]] = None
+) -> Dict[int, str]:
+    """The highest scoring group of these (player, value) pairs that fits the slots, as
+    player id -> slot. Each player tries his `prefer` slot first, so a lineup that's
+    already right stays put."""
+    prefer = prefer or {}
+    ranked = sorted((pv for pv in players if pv[1] > 0), key=lambda pv: pv[1], reverse=True)
+    fits = [
+        sorted((s for s, name in enumerate(slots) if name in p.eligible_slots), key=lambda s: slots[s] != prefer.get(p.id))
+        for p, _ in ranked
+    ]
+    owner: List[Optional[int]] = [None] * len(slots)
+    for i in range(len(ranked)):
+        _place(i, fits, owner, set())
+    return {ranked[i][0].id: slots[s] for s, i in enumerate(owner) if i is not None}
+
+
 def best_lineup(players: Sequence[Tuple[PlayerView, float]], slots: List[str]) -> List[PlayerView]:
     """The highest scoring group of these (player, value) pairs that fits the slots."""
-    ranked = sorted((pv for pv in players if pv[1] > 0), key=lambda pv: pv[1], reverse=True)
-    fits = [[s for s, name in enumerate(slots) if name in p.eligible_slots] for p, _ in ranked]
-    owner: List[Optional[int]] = [None] * len(slots)
-    return [p for i, (p, _) in enumerate(ranked) if _place(i, fits, owner, set())]
+    chosen = assign(players, slots)
+    return [p for p, _ in players if p.id in chosen]
 
 
 @dataclass
@@ -98,3 +114,78 @@ def project(
         if slots:
             week.open[sp] = len(slots) - len(starters)
     return week
+
+
+@dataclass
+class LineupChange:
+    player: PlayerView
+    old: str  # slot he's in now
+    new: str  # slot to move him to, "BE" for the bench
+    reason: str = ""  # why a starter comes out
+
+
+@dataclass
+class TodayPlan:
+    changes: List[LineupChange] = field(default_factory=list)
+    gain: float = 0.0  # fpts the changes add today
+    warnings: List[str] = field(default_factory=list)
+    # Starting spots nobody can fill today, and the starters left in them who won't score
+    empty: int = 0
+    idle: List[Tuple[PlayerView, str]] = field(default_factory=list)
+
+
+def todays_lineup(snap: Snapshot, cfg: Config, value_of: Callable[[PlayerView], float]) -> TodayPlan:
+    """The best lineup for today's games that haven't started, as changes from the one
+    set in ESPN. Players whose game has started are locked, and so is their slot."""
+    plan = TodayPlan()
+    today, now = snap.today, snap.now
+    day = snap.period_dates.get(today)
+    for p in snap.my_roster:
+        if p.lineup_slot == "IR" and not p.is_out:
+            plan.warnings.append(
+                f"{p.name} is {p.status_label()} but still on IR. ESPN blocks adds and drops until he's moved off it."
+            )
+    slots = starting_slots(snap.lineup_slots)
+    if not slots or today not in snap.period_dates:
+        return plan
+
+    def locked(p: PlayerView) -> bool:
+        return now is not None and today in p.games and p.games[today] <= now
+
+    def worth(p: PlayerView) -> float:
+        if today not in p.games:
+            return 0.0
+        return availability_on(p, day, cfg) * value_of(p)
+
+    free = list(slots)
+    movable = []
+    for p in snap.my_roster:
+        if p.lineup_slot == "IR":
+            continue
+        if locked(p):
+            if p.lineup_slot in free:
+                free.remove(p.lineup_slot)
+        else:
+            movable.append(p)
+    current = {p.id: p.lineup_slot for p in movable}
+    best = assign([(p, worth(p)) for p in movable], free, prefer=current)
+    plan.gain = sum(worth(p) for p in movable if p.id in best) - sum(
+        worth(p) for p in movable if p.lineup_slot in free and p.lineup_slot not in NOT_STARTING
+    )
+    for p in movable:
+        new = best.get(p.id, "BE")
+        if new == p.lineup_slot:
+            continue
+        reason = ""
+        if new == "BE":
+            reason = "no game today" if today not in p.games else p.status_label() if worth(p) == 0 else "others score more"
+        plan.changes.append(LineupChange(p, p.lineup_slot or "BE", new, reason))
+    plan.changes.sort(key=lambda c: c.new != "BE")  # benchings first, so the slots are free
+    plan.empty = len(free) - len(best)
+    if plan.empty:
+        plan.idle = [
+            (p, "no game today" if today not in p.games else p.status_label())
+            for p in movable
+            if p.id not in best and p.lineup_slot not in NOT_STARTING and p.lineup_slot
+        ]
+    return plan

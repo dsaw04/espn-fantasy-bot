@@ -269,18 +269,51 @@ def test_category_leagues_get_the_hashtag_rank():
 
 
 # ---- lineup and report -------------------------------------------------------
-def test_lineup_swap_benches_idle_starter_for_bench_player_with_game():
-    r = build_report(scenario(), cfg())
-    swap = next(s for s in r.swaps if s.bench.name == "Star Guard")
-    assert swap.reason == "no game today"
-    assert swap.start and swap.start.name == "Bench Guard"
+SLOTS = {"PG": 1, "SG": 1, "C": 1, "UT": 1, "BE": 3, "IR": 1}
+
+
+def test_lineup_benches_idle_starter_for_bench_player_with_game():
+    snap = scenario()
+    snap.lineup_slots = SLOTS
+    plan = build_report(snap, cfg()).lineup
+    moves = {c.player.name: (c.old, c.new, c.reason) for c in plan.changes}
+    assert moves["Star Guard"] == ("PG", "BE", "no game today")
+    assert moves["Bench Guard"] == ("BE", "PG", "")
+    assert plan.gain == pytest.approx(25)
+    assert plan.changes[0].new == "BE"  # benchings first, to free the slot
+
+
+def test_lineup_leaves_players_whose_game_started_alone():
+    snap = scenario()
+    snap.lineup_slots = SLOTS
+    bench_guard = next(p for p in snap.my_roster if p.name == "Bench Guard")
+    snap.now = bench_guard.games[10]  # his game (and everyone's today) has tipped off
+    r = build_report(snap, cfg())
+    assert "Bench Guard" not in {c.player.name for c in r.lineup.changes}
+    assert r.lineup.gain == 0 and "**Set your lineup today**" not in render(r)
+
+
+def test_lineup_keeps_a_lineup_thats_already_right():
+    snap = scenario()
+    snap.lineup_slots = SLOTS
+    for p in snap.my_roster:
+        p.lineup_slot = {"Star Guard": "BE", "Bench Guard": "PG"}.get(p.name, p.lineup_slot)
+    r = build_report(snap, cfg())
+    assert r.lineup.changes == []
+    assert "**Lineup today**: set. No changes needed." in render(r)
+
+
+def test_warns_about_a_healthy_player_left_on_ir():
+    snap = scenario()
+    snap.my_roster[1].lineup_slot = "IR"  # Bench Guard is healthy
+    text = render(build_report(snap, cfg()))
+    assert "Bench Guard is healthy but still on IR. ESPN blocks adds and drops" in text
 
 
 def test_render_is_readable():
     text = render(build_report(scenario(), cfg()))
     assert "Add **Lakers Backup C**" in text and "drop **Old Stream** (streaming spot). ~+112 fpts over the next 4 days" in text
     assert "Late Pick A (streaming spot): ~14.0 fpts/g" in text
-    assert "sit Star Guard" in text
     assert "**Depth watch**" in text
     print(text)
 
@@ -584,3 +617,14 @@ def test_report_lists_days_with_empty_lineup_spots():
     r = build_report(snap, cfg())
     assert r.open_spots and all(n > 0 for _, n in r.open_spots)
     assert "**Empty lineup spots**" in render(r)
+
+
+def test_lineup_says_when_a_dead_spot_cant_be_filled():
+    snap = scenario()
+    snap.lineup_slots = SLOTS
+    for p in snap.my_roster:
+        if p.name == "Bench Guard":
+            p.games.pop(10)  # nobody on the bench plays today now
+    text = render(build_report(snap, cfg()))
+    # Only Late Pick A plays today, so three of the four starting spots are dead.
+    assert "3 starting spots will score nothing (Star Guard: no game today), and nobody on your bench plays." in text

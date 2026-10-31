@@ -4,7 +4,7 @@ A daily bot built on [cwendt94/espn-api](https://github.com/cwendt94/espn-api). 
 
 1. **Reads the injury report** for your roster and every NBA player in the league's pool.
 2. **Scouts the depth chart.** When a starter is out, it pulls game logs for the free agent teammates who play his position and splits their games into with him and without him, so you see what each backup has actually done in the bigger role. If the injury is too fresh for that, it estimates the bump instead.
-3. **Fixes today's lineup.** Starters with no game or who are ruled out get swapped for the best bench player who plays today and fits the slot.
+3. **Sets today's lineup.** It works out the best lineup for today's games that haven't tipped off and lists the changes from the one set in ESPN. Players whose game has started are locked, and it tries to keep everyone in his current slot. It also warns when a healthy player is still on IR, since ESPN then blocks adds and drops.
 4. **Suggests add/drops from your whole roster.** Your weakest couple of players are streaming spots that rotate whenever someone should score more this week. Everyone else is core and only moves for a clear, consistent upgrade.
 5. **Plays the matchup.** It reads the live score, both opponents' rosters and your adds left, and projects your chance of winning this week and next. Streaming moves are judged by how much they raise those chances.
 
@@ -105,6 +105,7 @@ To get a Discord post: Server Settings > Integrations > Webhooks > New Webhook, 
 | `projection_error` | How far off a per game estimate typically is. Higher means less certain win chances. |
 | `stream_min_gain` | Without matchup data only: fpts over the horizon a pickup must beat a streaming spot by. |
 | `min_edge` | How many fpts per game a pickup must out-score a core player by. |
+| `lineup_min_gain` | Fpts a better lineup must add today before the report says to change yours. Benching a starter who won't score always counts. |
 | `min_games_without` | Games a backup must have played without the injured starter before his new role counts. Lower it to jump on injuries earlier, at the cost of smaller samples. |
 | `absorb_rate` | How much of an injured star's output flows to backups. 0.5 is a reasonable starting point. |
 | `min_minutes_for_depth` | Ignore injuries to players who weren't playing real minutes anyway. |
