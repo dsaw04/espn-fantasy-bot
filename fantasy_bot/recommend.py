@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Set
+from statistics import median
+from typing import Dict, List, Optional, Set
 
 from .config import Config
+from .lineup import Week, project
 from .model import PlayerView, Snapshot, n_games
-from .scoring import Scorer, Valuation, availability_on, minutes_trend
+from .opportunity import Opportunity, fresh_injuries, opportunities
+from .scoring import Scorer, Valuation, availability_on
 
 
 @dataclass
@@ -22,8 +25,29 @@ class LineupSwap:
 class Move:
     add: Valuation
     drop: Valuation
-    gain: float
+    kind: str  # "stream": replaces a streaming spot on expected fpts; "core": a per game upgrade
+    per_game: float  # what the add should score per game in his current role
+    drop_per_game: float
+    gain: float  # how much the move raises your best lineups' total over the horizon
+    edge: float  # per game, add minus drop
+    opportunity: Optional[Opportunity] = None  # the injury that opened his role, if any
+    add_starts: int = 0  # games the add would start over the horizon
+    add_games: int = 0
+    drop_starts: int = 0  # games the drop would have started
+    drop_games: int = 0
     reasons: List[str] = field(default_factory=list)
+
+
+@dataclass
+class Watch:
+    """A free agent whose role is growing but who doesn't clear the bar yet."""
+
+    player: PlayerView
+    injured: PlayerView
+    per_game: float
+    games_without: int  # games played without the injured player; 0 means per_game is an estimate
+    edge: float  # per_game minus your weakest droppable player's per game value
+    median: float = 0.0  # his typical game without the injured player
 
 
 @dataclass
@@ -34,25 +58,24 @@ class Report:
     injured_on_roster: List[PlayerView]
     swaps: List[LineupSwap]
     moves: List[Move]
-    chopping_block: List[Valuation]
-    watchlist: List[Valuation]
+    roster: List[Valuation]  # everyone you could drop, weakest per game first
+    watchlist: List[Watch]
+    streamers: Set[int] = field(default_factory=set)  # ids of the streaming spots
+    week: Optional[Week] = None  # your best lineups over the horizon, before any move
+    per_game: Dict[int, float] = field(default_factory=dict)  # your players' per game value in their current role
+    min_edge: float = 0.0
+    stream_min_gain: float = 0.0
+    moves_start_tomorrow: bool = False
 
 
 def _norm(name: str) -> str:
     return " ".join(name.lower().replace(".", "").split())
 
 
-def chopping_block(snap: Snapshot, cfg: Config) -> List[PlayerView]:
-    named = {_norm(n) for n in cfg.chopping_block}
+def droppable(snap: Snapshot, cfg: Config) -> List[PlayerView]:
+    """Everyone on the roster a move would change, except the untouchables."""
     safe = {_norm(n) for n in cfg.untouchable}
-    out = []
-    for p in snap.my_roster:
-        key = _norm(p.name)
-        if key in safe:
-            continue
-        if key in named or (cfg.auto_chop_pickups and p.acquisition_type == "ADD"):
-            out.append(p)
-    return out
+    return [p for p in snap.roster_for_moves() if _norm(p.name) not in safe]
 
 
 def lineup_swaps(snap: Snapshot, cfg: Config, scorer: Scorer) -> List[LineupSwap]:
@@ -90,89 +113,208 @@ def lineup_swaps(snap: Snapshot, cfg: Config, scorer: Scorer) -> List[LineupSwap
     return swaps
 
 
-def _add_reasons(v: Valuation, horizon: int) -> List[str]:
-    p = v.player
-    r = [f"{n_games(v.games)} in the next {horizon} days, ~{v.base:.1f} fpts/g"]
-    for o in sorted(v.openings, key=lambda o: o.boost, reverse=True):
-        if o.boost < 0.5:
-            continue
+HASHTAG_WINDOWS = (("last_14", "last 14 days"), ("season", "season"), ("last_7", "last 7 days"))
+
+
+def _hashtag_reason(add: PlayerView, drop: PlayerView, scoring: Dict[str, float]) -> Optional[str]:
+    """Hashtag Basketball as a second opinion, from the first window both players have.
+    In a points league its per game stats are scored with the league's own points, since
+    its 9-cat rank weighs every category equally (a steal is worth 4 points here, not 1/9)."""
+    for window, label in HASHTAG_WINDOWS:
+        a, d = add.hashtag.get(window), drop.hashtag.get(window)
+        if a and d:
+            if scoring:
+                return (
+                    f"Hashtag stats in your scoring ({label}): {add.name} {a.fpts(scoring):.1f} fpts/g, "
+                    f"{drop.name} {d.fpts(scoring):.1f}"
+                )
+            return f"Hashtag 9-cat rank ({label}): {add.name} #{a.rank}, {drop.name} #{d.rank}"
+    return None
+
+
+def _pos(p: PlayerView) -> str:
+    return "/".join(sorted(p.positions)) or "?"
+
+
+def _median_game(p: PlayerView) -> Optional[float]:
+    return median(g.fpts for g in p.game_log.values()) if p.game_log else None
+
+
+def _reasons(m: Move, horizon: int, scoring: Dict[str, float]) -> List[str]:
+    a, d, opp = m.add.player, m.drop.player, m.opportunity
+    r: List[str] = []
+    if opp:
+        inj, wo, w = opp.injured, opp.without_him, opp.with_him
         r.append(
-            f"{o.injured.name} ({'/'.join(sorted(o.injured.positions))}) is "
-            f"{o.injured.status_label()}, leaving ~{o.value:.0f} fpts/g behind. "
-            f"Projected bump ~+{o.boost:.1f}/g"
+            f"{inj.name} ({inj.pro_team} {_pos(inj)}) is {inj.status_label()}. Without him: "
+            f"{', '.join(f'{x:.0f}' for x in wo.fpts)} fpts (avg {wo.avg:.1f}, {wo.mpg:.0f} min/g)"
         )
-    trend = minutes_trend(p)
-    if trend >= 3:
-        r.append(f"minutes up {p.mpg.get('season', 0):.0f} to {p.mpg.get('last_7', 0):.0f} over the last week")
-    if p.is_risky:
-        r.append(f"note: listed {p.status_label()}")
+        if w.games:
+            r.append(f"with him: {w.avg:.1f} fpts in {w.mpg:.0f} min/g over {n_games(w.games)}")
+        else:
+            r.append(f"{inj.name} hasn't played with him this season, so that's his whole season")
+    r.append(
+        f"next {horizon} days: {a.name} would start {m.add_starts} of his {n_games(m.add_games)} (~{m.per_game:.1f}/g), "
+        f"{d.name} starts {m.drop_starts} of {m.drop_games} (~{m.drop_per_game:.1f}/g)"
+    )
+    if m.kind == "core" and opp and (dm := _median_game(d)) is not None:
+        r.append(f"median game {opp.without_him.median:.0f} vs {dm:.0f} for {d.name}")
+    if opp and opp.with_him.games:
+        r.append(f"expect ~{opp.with_him.avg:.0f} fpts/g again once {opp.injured.name} returns")
+    if a.is_risky:
+        r.append(f"note: {a.name} is listed {a.status_label()}")
+    if (ht := _hashtag_reason(a, d, scoring)) is not None:
+        r.append(ht)
     return r
 
 
-def _drop_reason(v: Valuation, horizon: int) -> str:
-    p = v.player
-    bits = [f"{n_games(v.games)} in {horizon} days, ~{v.base:.1f} fpts/g"]
-    if p.is_out or p.is_risky:
-        bits.append(p.status_label())
-    return ", ".join(bits)
+def _role_value(fa: PlayerView, opps: List[Opportunity], cfg: Config, scorer: Scorer):
+    """Per game value in the role he has now. With enough games played while an injured
+    teammate sat, that's his actual average in those games. Otherwise his blended average."""
+    solid = [o for o in opps if o.without_him.games >= cfg.min_games_without]
+    if solid:
+        best = max(solid, key=lambda o: o.without_him.avg)
+        return best.without_him.avg, best
+    return scorer.base(fa), None
+
+
+def _expected(p: PlayerView, per_game: float, days: List[int], snap: Snapshot, cfg: Config) -> float:
+    """Expected fpts over these days. Uses only observed value: the depth chart estimate
+    is a guess, so it feeds the watch list, not moves."""
+    return sum(
+        availability_on(p, snap.period_dates.get(sp), cfg) * per_game for sp in days if sp in p.games
+    )
+
+
+def _consistent(opp: Optional[Opportunity], drop: PlayerView, drop_per_game: float) -> bool:
+    """For a core upgrade built on an injury, his typical game without the starter has to
+    beat the drop's typical game, so one huge night can't carry the average."""
+    if opp is None:
+        return True
+    theirs = _median_game(drop)
+    return opp.without_him.median > (theirs if theirs is not None else drop_per_game)
 
 
 def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
-    droppable = [scorer.value(p) for p in chopping_block(snap, cfg)]
-    droppable.sort(key=lambda v: v.expected)
+    """Your weakest few players are streaming spots: anyone who raises your best lineups'
+    total over the horizon by stream_min_gain replaces them. Everyone else is core and only
+    moves for a consistent per game upgrade of min_edge, since acquisitions are limited."""
+    days = snap.move_days()
+    all_opps = opportunities(snap, cfg)
+    opps_by_player: Dict[int, List[Opportunity]] = {}
+    for o in all_opps:
+        opps_by_player.setdefault(o.player.id, []).append(o)
 
-    pool = [p for p in snap.free_agents if not p.is_out and p.games]
-    adds = [scorer.value(p) for p in pool]
-    adds.sort(key=lambda v: v.expected, reverse=True)
+    # Your players get the same role based value a free agent would.
+    value = {p.id: _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)[0] for p in snap.roster_for_moves()}
+    roster = [scorer.value(p, days) for p in droppable(snap, cfg)]
+    roster.sort(key=lambda v: value[v.player.id])
+    streamers = {v.player.id for v in roster[: cfg.streaming_spots]}
+    # Everyone you'd field, untouchables included.
+    lineup = [(p, value[p.id]) for p in snap.roster_for_moves()]
+    week = before = project(lineup, days, snap, cfg)
+
+    def swap(add: PlayerView, per_game: float, drop: Valuation):
+        trial = [x for x in lineup if x[0].id != drop.player.id] + [(add, per_game)]
+        return trial, project(trial, days, snap, cfg)
+
+    candidates = []
+    for p in snap.free_agents:
+        if p.is_out or not p.games:
+            continue
+        v = scorer.value(p, days)
+        if not v.games:
+            continue  # no game before the horizon ends
+        per_game, opp = _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)
+        candidates.append((_expected(p, per_game, days, snap, cfg), per_game, opp, v))
+    candidates.sort(key=lambda c: c[0], reverse=True)
 
     moves: List[Move] = []
-    remaining_drops = list(droppable)
+    remaining = list(roster)
     taken: Set[int] = set()
     bet_on: Set[int] = set()  # injured players a recommended add is already leaning on
-    for add in adds:
-        if len(moves) >= cfg.max_moves or not remaining_drops:
+    for expected, per_game, opp, add in candidates:
+        if len(moves) >= cfg.max_moves or not remaining:
             break
-        if add.player.id in taken:
-            continue
-        leans_on = {o.injured.id for o in add.openings if o.boost >= 0.25 * max(add.base, 1)}
-        if leans_on & bet_on:
+        if opp and opp.injured.id in bet_on:
             continue  # don't stack two pickups on the same injury
-        bet_on |= leans_on
-        drop = remaining_drops[0]
-        gain = add.expected - drop.expected
-        if gain < cfg.min_gain:
-            break
-        moves.append(
-            Move(
-                add=add,
-                drop=drop,
-                gain=gain,
-                reasons=_add_reasons(add, len(snap.horizon))
-                + [f"drop {drop.player.name}: {_drop_reason(drop, len(snap.horizon))}"],
-            )
-        )
+        best: Optional[Move] = None
+        best_trial = None
+        # Streaming spots first, into whichever one raises the lineup total most. Adding a
+        # player can raise it by at most his own expected value, so skip hopeless ones.
+        if expected >= cfg.stream_min_gain:
+            for drop in remaining:
+                if drop.player.id not in streamers:
+                    continue
+                trial, after = swap(add.player, per_game, drop)
+                gain = after.total - week.total
+                if gain >= cfg.stream_min_gain and (best is None or gain > best.gain):
+                    dv = value[drop.player.id]
+                    best = Move(add, drop, "stream", per_game, dv, gain, per_game - dv, opp)
+                    best_trial = (trial, after)
+        # Core players only for a consistent per game upgrade, judged per game and not on the
+        # next few days, so an injured regular is never dropped for being worth 0 this week.
+        if best is None:
+            for drop in remaining:  # weakest per game first
+                dv = value[drop.player.id]
+                edge = per_game - dv
+                if drop.player.id not in streamers and edge >= cfg.min_edge and _consistent(opp, drop.player, dv):
+                    trial, after = swap(add.player, per_game, drop)
+                    best = Move(add, drop, "core", per_game, dv, after.total - week.total, edge, opp)
+                    best_trial = (trial, after)
+                    break
+        if best is None:
+            continue
+        trial, after = best_trial
+        best.add_starts, best.add_games = after.starts.get(add.player.id, 0), after.games.get(add.player.id, 0)
+        best.drop_starts = week.starts.get(best.drop.player.id, 0)
+        best.drop_games = week.games.get(best.drop.player.id, 0)
+        best.reasons = _reasons(best, len(days), snap.scoring)
+        lineup, week = trial, after  # the next move builds on this one
+        moves.append(best)
+        if opp:
+            bet_on.add(opp.injured.id)
         taken.add(add.player.id)
-        remaining_drops.pop(0)
+        remaining.remove(best.drop)
 
-    # Depth plays worth watching even if they don't beat anyone on the block yet.
-    watch = [
-        v
-        for v in adds
-        if v.player.id not in taken and any(o.boost >= 1.0 for o in v.openings)
-    ][:5]
-    return moves, droppable, watch
+    weakest = value[roster[0].player.id] if roster else 0.0
+    fa_ids = {p.id for p in snap.free_agents}
+    # Free agent roles that have grown in the game logs, whether or not they clear the bar yet.
+    watch: List[Watch] = [
+        Watch(o.player, o.injured, o.without_him.avg, o.without_him.games, o.without_him.avg - weakest,
+              o.without_him.median)
+        for o in all_opps
+        if o.player.id in fa_ids and o.player.id not in taken and o.without_him.avg > scorer.base(o.player)
+    ]
+    # Injuries too fresh for game logs: fall back to the depth chart estimate.
+    for inj, mates in fresh_injuries(snap, cfg):
+        for p in mates:
+            if p.id in taken or p.id not in fa_ids:
+                continue
+            boost = sum(o.boost for o in scorer.openings_for(p) if o.injured.id == inj.id)
+            if boost >= 1.0:
+                est = scorer.base(p) + boost
+                watch.append(Watch(p, inj, est, 0, est - weakest))
+    watch.sort(key=lambda w: w.per_game, reverse=True)
+    return moves, roster, streamers, watch[:5], before, value
 
 
 def build_report(snap: Snapshot, cfg: Config) -> Report:
     scorer = Scorer(snap, cfg)
-    moves, block, watch = waiver_moves(snap, cfg, scorer)
+    moves, roster, streamers, watch, week, value = waiver_moves(snap, cfg, scorer)
     return Report(
         team_name=snap.my_team_name,
         today=snap.today,
-        horizon_days=len(snap.horizon),
-        injured_on_roster=[p for p in snap.my_roster if p.is_out or p.is_risky],
+        horizon_days=len(snap.move_days()),
+        injured_on_roster=[p for p in snap.roster_for_moves() if p.is_out or p.is_risky],
         swaps=lineup_swaps(snap, cfg, scorer),
         moves=moves,
-        chopping_block=block,
+        roster=roster,
         watchlist=watch,
+        streamers=streamers,
+        week=week,
+        per_game=value,
+        min_edge=cfg.min_edge,
+        stream_min_gain=cfg.stream_min_gain,
+        moves_start_tomorrow=snap.move_days()[:1] != snap.horizon[:1],
     )

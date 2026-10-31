@@ -1,21 +1,29 @@
 from datetime import date, datetime, timedelta
 
+import pytest
 from espn_api.basketball.player import Player
 
 from fantasy_bot.config import Config
 from fantasy_bot.espn_adapter import EspnSource
-from fantasy_bot.model import PlayerView, Snapshot
-from fantasy_bot.recommend import build_report, chopping_block
+from fantasy_bot.model import GameLog, HashtagLine, PlayerView, Snapshot
+from fantasy_bot.opportunity import needs_game_logs, opportunities
+from fantasy_bot.recommend import build_report, droppable
 from fantasy_bot.report import render
 from fantasy_bot.scoring import Scorer
 
 TODAY = 10
 HORIZON = [10, 11, 12, 13]
-DATES = {sp: date(2026, 10, 28) + timedelta(days=sp - TODAY) for sp in HORIZON}
+DATES = {sp: date(2026, 10, 28) + timedelta(days=sp - TODAY) for sp in range(1, 15)}
+PAST = [2, 4, 6, 8, 9]  # games already played this season
 
 
 def games(*sps):
     return {sp: datetime.combine(DATES[sp], datetime.min.time()) for sp in sps}
+
+
+def log(**games_by_sp):
+    """log(g6=(30, 28)) -> {6: GameLog(fpts=30, minutes=28)}"""
+    return {int(k[1:]): GameLog(*v) for k, v in games_by_sp.items()}
 
 
 def pv(pid, name, team, team_id, slots, fpts, mpg, sched, **kw):
@@ -27,15 +35,17 @@ def pv(pid, name, team, team_id, slots, fpts, mpg, sched, **kw):
 
 
 def cfg(**kw):
-    base = dict(league_id=1, year=2027, team_id=1, chopping_block=["Late Pick A", "Late Pick B"],
-                auto_chop_pickups=True, horizon_days=4, min_gain=5.0, max_moves=2)
+    base = dict(league_id=1, year=2027, team_id=1, horizon_days=4, min_edge=4.0, min_games_without=3, max_moves=2)
     base.update(kw)
     return Config(**base)
 
 
+C = ["C", "F/C", "PF/C", "UT", "BE", "IR"]
+G = ["PG", "SG", "G", "UT", "BE", "IR"]
+F = ["SF", "PF", "F", "UT", "BE", "IR"]
+
+
 def scenario():
-    C = ["C", "F/C", "PF/C", "UT", "BE", "IR"]
-    G = ["PG", "SG", "G", "UT", "BE", "IR"]
     my = [
         pv(1, "Star Guard", "BOS", 2, G, 45, 34, [11, 12], lineup_slot="PG", acquisition_type="DRAFT"),
         pv(2, "Bench Guard", "MIA", 14, G, 25, 28, [10, 11, 12], lineup_slot="BE", acquisition_type="DRAFT"),
@@ -45,27 +55,48 @@ def scenario():
         pv(5, "Old Stream", "POR", 22, G, 16, 22, [11], lineup_slot="BE", acquisition_type="ADD"),
     ]
     others = [
-        pv(20, "Lakers Starting C", "LAL", 13, C, 44, 33, [10, 11, 12, 13], owner="other",
-           injury_status="OUT", expected_return=date(2026, 11, 6)),
-        pv(21, "Lakers Starting PF", "LAL", 13, ["PF", "F", "PF/C", "UT", "BE"], 30, 32, [10, 11, 12, 13], owner="other"),
+        # Played the first two games, has missed the last three.
+        pv(20, "Lakers Starting C", "LAL", 13, C, 44, 33, PAST + HORIZON, owner="other",
+           injury_status="OUT", expected_return=date(2026, 11, 6), game_log=log(g2=(40, 33), g4=(46, 34))),
+        pv(21, "Lakers Starting PF", "LAL", 13, ["PF", "F", "PF/C", "UT", "BE"], 30, 32, PAST + HORIZON, owner="other"),
+        # Ruled out today after playing every game, so nobody has played without him yet.
+        pv(22, "Heat Starting F", "MIA", 14, F, 40, 32, PAST + [10, 11, 12], owner="other", injury_status="OUT",
+           game_log=log(g2=(40, 32), g4=(40, 32), g6=(40, 32), g8=(40, 32), g9=(40, 32))),
     ]
     fas = [
-        pv(30, "Lakers Backup C", "LAL", 13, C, 15, 15, [10, 11, 12, 13], mpg7=24, percent_owned=6),
+        pv(30, "Lakers Backup C", "LAL", 13, C, 15, 15, PAST + HORIZON, mpg7=24, percent_owned=6,
+           game_log=log(g2=(12, 15), g4=(14, 16), g6=(30, 28), g8=(34, 30), g9=(32, 29))),
         pv(31, "Steady Vet", "SAS", 24, G, 21, 26, [12], percent_owned=30),
         pv(32, "Hurt FA", "NYK", 18, G, 40, 30, [10, 11, 12, 13], injury_status="OUT"),
-        pv(33, "Lakers Third C", "LAL", 13, C, 6, 6, [10, 11, 12, 13]),
+        pv(33, "Lakers Third C", "LAL", 13, C, 6, 6, PAST + HORIZON,
+           game_log=log(g6=(8, 10), g8=(6, 8), g9=(10, 12))),
+        pv(34, "Heat Backup F", "MIA", 14, F, 14, 18, PAST + [10, 11, 12],
+           game_log=log(g2=(14, 18), g4=(14, 18), g6=(14, 18), g8=(14, 18), g9=(14, 18))),
     ]
     return Snapshot(TODAY, HORIZON, "Dhruv's Team", my, others, fas, DATES)
 
 
+def fa(snap, pid):
+    return next(p for p in snap.free_agents if p.id == pid)
+
+
+# ---- depth chart estimate --------------------------------------------------
 def test_depth_boost_goes_to_backup_not_unrelated_players():
     snap = scenario()
     s = Scorer(snap, cfg())
-    backup = s.value(next(p for p in snap.free_agents if p.id == 30))
-    vet = s.value(next(p for p in snap.free_agents if p.id == 31))
+    backup = s.value(fa(snap, 30))
+    vet = s.value(fa(snap, 31))
     assert backup.openings and backup.openings[0].injured.name == "Lakers Starting C"
     assert not vet.openings
     assert backup.expected > backup.base * backup.games  # boosted
+
+
+def test_next_man_up_gets_bigger_bump_than_third_stringer():
+    snap = scenario()
+    s = Scorer(snap, cfg())
+    backup = s.value(fa(snap, 30)).openings[0].boost
+    third = s.value(fa(snap, 33)).openings[0].boost
+    assert backup > 2 * third
 
 
 def test_injured_player_contributes_nothing_until_return():
@@ -74,28 +105,170 @@ def test_injured_player_contributes_nothing_until_return():
     assert v.games == 0 and v.expected == 0
 
 
-def test_chopping_block_includes_named_and_pickups_but_respects_untouchable():
-    names = {p.name for p in chopping_block(scenario(), cfg())}
-    assert names == {"Late Pick A", "Late Pick B", "Old Stream"}
-    names = {p.name for p in chopping_block(scenario(), cfg(untouchable=["Old Stream"]))}
-    assert "Old Stream" not in names
+# ---- game log splits ---------------------------------------------------------
+def test_splits_backup_games_with_and_without_injured_starter():
+    snap = scenario()
+    opp = next(o for o in opportunities(snap, cfg()) if o.player.name == "Lakers Backup C")
+    assert opp.injured.name == "Lakers Starting C"
+    assert opp.with_him.fpts == [12, 14]
+    assert opp.without_him.fpts == [30, 34, 32]
+    assert opp.without_him.mpg == 29
 
 
-def test_recommends_backup_for_injured_late_pick_and_skips_hurt_fa():
+def test_starter_out_all_season_makes_every_game_a_without_game():
+    snap = scenario()
+    starter = next(p for p in snap.other_rostered if p.id == 20)
+    starter.game_log, starter.fpts, starter.mpg = {}, {"projected": 44}, {"projected": 33}
+    opp = next(o for o in opportunities(snap, cfg()) if o.player.name == "Lakers Backup C")
+    assert opp.with_him.games == 0 and opp.without_him.fpts == [12, 14, 30, 34, 32]
+    # His stats already reflect the bigger role, so the estimate must not add a bump on top.
+    assert not Scorer(snap, cfg()).openings_for(fa(snap, 30))
+
+
+def test_only_fetches_logs_for_injured_rotation_players_and_their_free_agent_teammates():
+    names = {p.name for p in needs_game_logs(scenario(), cfg())}
+    assert names == {"Lakers Starting C", "Lakers Backup C", "Lakers Third C", "Heat Starting F", "Heat Backup F"}
+
+
+# ---- moves -------------------------------------------------------------------
+# Roster per game: Late Pick A 14, Old Stream 16, Late Pick B 18 (out), Bench Guard 25, Star Guard 45.
+# With two streaming spots, Late Pick A and Old Stream rotate; the rest are core.
+def test_whole_roster_is_droppable_except_untouchables():
+    names = {p.name for p in droppable(scenario(), cfg())}
+    assert names == {"Star Guard", "Bench Guard", "Late Pick A", "Late Pick B", "Old Stream"}
+    names = {p.name for p in droppable(scenario(), cfg(untouchable=["Star Guard", "old stream"]))}
+    assert names == {"Bench Guard", "Late Pick A", "Late Pick B"}
+
+
+def test_streaming_spots_are_the_weakest_players_per_game():
+    assert build_report(scenario(), cfg()).streamers == {3, 5}
+    assert build_report(scenario(), cfg(streaming_spots=1)).streamers == {3}
+    # Untouchables are never streaming spots.
+    assert build_report(scenario(), cfg(untouchable=["Late Pick A"])).streamers == {5, 4}
+
+
+def test_streams_backup_into_the_spot_he_gains_most_over():
     r = build_report(scenario(), cfg())
-    assert r.moves, "expected at least one move"
     first = r.moves[0]
-    assert first.add.player.name == "Lakers Backup C"
-    assert first.drop.player.name == "Late Pick B"
+    assert first.add.player.name == "Lakers Backup C" and first.kind == "stream"
+    # 4 games x 32 = 128. Old Stream plays once (16), Late Pick A twice (28), so Old Stream goes.
+    assert first.drop.player.name == "Old Stream" and first.gain == 112
+    assert first.per_game == 32  # his average without the injured starter, not his blended 15
+    assert any("Without him: 30, 34, 32 fpts" in reason for reason in first.reasons)
     assert all(m.add.player.name != "Hurt FA" for m in r.moves)
-    assert any("Lakers Starting C" in reason for reason in first.reasons)
 
 
-def test_min_gain_blocks_marginal_moves():
-    r = build_report(scenario(), cfg(min_gain=1000))
+def test_a_busier_schedule_alone_can_win_a_streaming_spot():
+    r = build_report(scenario(), cfg())
+    m = next(m for m in r.moves if m.add.player.name == "Heat Backup F")
+    # Same 14 fpts/g as Late Pick A, but 3 games to his 2.
+    assert m.kind == "stream" and m.drop.player.name == "Late Pick A" and m.gain == pytest.approx(14)
+
+
+def test_stream_moves_clear_stream_min_gain():
+    names = [m.add.player.name for m in build_report(scenario(), cfg(stream_min_gain=15)).moves]
+    assert names == ["Lakers Backup C"]  # Heat Backup F's +14 is not enough
+    for gain in (10.0, 50.0):
+        assert all(m.gain >= gain for m in build_report(scenario(), cfg(stream_min_gain=gain, max_moves=5)).moves)
+
+
+def test_injured_core_player_is_not_dropped_for_being_worth_zero_this_week():
+    r = build_report(scenario(), cfg(max_moves=5))
+    assert "Late Pick B" not in [m.drop.player.name for m in r.moves]
+
+
+def test_core_upgrade_needs_a_per_game_edge():
+    r = build_report(scenario(), cfg(streaming_spots=0))
+    first = r.moves[0]
+    assert first.kind == "core" and first.drop.player.name == "Late Pick A" and first.edge == 18
+    r = build_report(scenario(), cfg(streaming_spots=0, min_edge=20))
+    assert "Lakers Backup C" not in [m.add.player.name for m in r.moves]
+
+
+def test_one_huge_night_is_not_a_consistent_core_upgrade():
+    snap = scenario()
+    fa(snap, 30).game_log.update(log(g6=(60, 30), g8=(10, 28), g9=(12, 29)))  # avg 27, median 12
+    next(p for p in snap.my_roster if p.id == 3).game_log = log(g2=(14, 20), g4=(14, 20))  # median 14
+    r = build_report(snap, cfg(streaming_spots=0))
+    assert "Lakers Backup C" not in [m.add.player.name for m in r.moves]
+    w = next(w for w in r.watchlist if w.player.name == "Lakers Backup C")
+    assert w.median == 12 and w.games_without == 3
+
+
+def test_needs_enough_games_without_the_starter_to_use_his_new_role():
+    m = build_report(scenario(), cfg(min_games_without=4)).moves[0]
+    assert m.add.player.name == "Lakers Backup C"
+    assert m.opportunity is None and m.per_game == pytest.approx(15)  # falls back to his blended average
+
+
+def test_holds_when_nobody_clears_either_bar():
+    r = build_report(scenario(), cfg(min_edge=1000, stream_min_gain=1000))
     assert r.moves == []
+    assert "Hold. Nobody beats your streaming spots (Late Pick A and Old Stream)" in render(r)
 
 
+def test_fresh_injury_shows_up_as_an_estimate_on_the_watch_list():
+    r = build_report(scenario(), cfg(max_moves=1))
+    w = next(w for w in r.watchlist if w.player.name == "Heat Backup F")
+    assert w.injured.name == "Heat Starting F" and w.games_without == 0
+    assert w.per_game == 34  # 14 base + half of the starter's 40
+    assert "no games without him yet" in render(r)
+
+
+def test_does_not_stack_two_pickups_on_one_injury():
+    r = build_report(scenario(), cfg(min_edge=-100, stream_min_gain=-1000, max_moves=5))
+    lal = [m for m in r.moves if m.add.player.pro_team == "LAL"]
+    assert len(lal) == 1
+
+
+def test_moves_use_next_period_roster_and_days():
+    snap = scenario()
+    pending = pv(6, "Pending Add", "SAS", 24, G, 50, 34, [11, 12, 13], acquisition_type="ADD")
+    snap.next_roster = [p for p in snap.my_roster if p.name != "Old Stream"] + [pending]
+    snap.move_horizon = [11, 12, 13]
+    r = build_report(snap, cfg(max_moves=5))
+    assert "Old Stream" not in {v.player.name for v in r.roster}  # already dropped today
+    assert "Pending Add" in {v.player.name for v in r.roster}
+    assert r.moves_start_tomorrow and r.horizon_days == 3
+    backup = next(m for m in r.moves if m.add.player.name == "Lakers Backup C")
+    assert backup.add.games == 3  # tonight's game doesn't count, he can't play it
+    assert "(adds play from tomorrow)" in render(r)
+
+
+def test_projection_counts_for_less_as_real_games_pile_up():
+    c = cfg()
+    p = pv(40, "Breakout", "UTA", 26, C, 32, 27, [10])
+    p.fpts["projected"] = 16
+    early = Scorer(scenario(), c).base(p)
+    p.game_log = log(**{f"g{sp}": (32, 27) for sp in range(1, 11)})
+    later = Scorer(scenario(), c).base(p)
+    assert early < later < 32
+
+
+def _hashtag(snap):
+    def line(name, rank, **stats):
+        return {"last_14": HashtagLine(name=name, team="", positions=[], rank=rank, games=5, mpg=20, stats=stats)}
+    fa(snap, 30).hashtag = line("Lakers Backup C", 120, PTS=20, STL=2, TO=1)
+    next(p for p in snap.my_roster if p.id == 5).hashtag = line("Old Stream", 210, PTS=10, AST=3)
+
+
+def test_hashtag_lines_are_scored_with_the_league_points():
+    snap = scenario()
+    _hashtag(snap)
+    snap.scoring = {"PTS": 1, "AST": 2, "STL": 4, "TO": -2}
+    reasons = build_report(snap, cfg()).moves[0].reasons
+    # 20 + 2x4 - 1x2 = 26, and 10 + 3x2 = 16
+    assert "Hashtag stats in your scoring (last 14 days): Lakers Backup C 26.0 fpts/g, Old Stream 16.0" in reasons
+
+
+def test_category_leagues_get_the_hashtag_rank():
+    snap = scenario()
+    _hashtag(snap)
+    reasons = build_report(snap, cfg()).moves[0].reasons
+    assert "Hashtag 9-cat rank (last 14 days): Lakers Backup C #120, Old Stream #210" in reasons
+
+
+# ---- lineup and report -------------------------------------------------------
 def test_lineup_swap_benches_idle_starter_for_bench_player_with_game():
     r = build_report(scenario(), cfg())
     swap = next(s for s in r.swaps if s.bench.name == "Star Guard")
@@ -105,11 +278,14 @@ def test_lineup_swap_benches_idle_starter_for_bench_player_with_game():
 
 def test_render_is_readable():
     text = render(build_report(scenario(), cfg()))
-    assert "Add **Lakers Backup C**" in text
+    assert "Add **Lakers Backup C**" in text and "drop **Old Stream** (streaming spot). ~+112 fpts over the next 4 days" in text
+    assert "Late Pick A (streaming spot): ~14.0 fpts/g" in text
     assert "sit Star Guard" in text
+    assert "**Depth watch**" in text
     print(text)
 
 
+# ---- ESPN adapter ------------------------------------------------------------
 def _raw_player(pid, name, fpts_avg, minutes, status="ACTIVE"):
     def split(code, avg):
         return {"seasonId": 2027, "id": f"{code}2027", "scoringPeriodId": 0,
@@ -144,20 +320,6 @@ def test_adapter_reads_espn_player_json():
     assert v2.fpts["season"] == 10.0  # PTS avg 10 x 1
 
 
-def test_next_man_up_gets_bigger_bump_than_third_stringer():
-    snap = scenario()
-    s = Scorer(snap, cfg())
-    backup = s.value(next(p for p in snap.free_agents if p.id == 30)).openings[0].boost
-    third = s.value(next(p for p in snap.free_agents if p.id == 33)).openings[0].boost
-    assert backup > 2 * third
-
-
-def test_does_not_stack_two_pickups_on_one_injury():
-    r = build_report(scenario(), cfg())
-    lal = [m for m in r.moves if m.add.player.pro_team == "LAL"]
-    assert len(lal) == 1
-
-
 def test_snapshot_end_to_end_with_fake_league():
     """Drives EspnSource.snapshot() with a stand-in for the espn_api League object."""
     from types import SimpleNamespace
@@ -169,16 +331,25 @@ def test_snapshot_end_to_end_with_fake_league():
     starter = _raw_player(1, "Injured Starter", 40.0, 32.0, status="OUT")
     mine_raw = _raw_player(2, "My Late Pick", 4.0, 8.0)
     fa_raw = _raw_player(3, "Waiver Backup", 14.0, 16.0)
+    added_raw = _raw_player(4, "Added Today", 30.0, 30.0)  # shows up on my roster from tomorrow
 
     ms = lambda d: int(datetime(2026, 10, 28 + d, 23).timestamp() * 1000)
     pro_schedule = {13: {str(10 + d): [{"date": ms(d), "homeProTeamId": 13, "awayProTeamId": 2}] for d in range(4)}}
 
     class FakeRequests:
         def get_player_card(self, ids, final, additional_filters=None):
-            return {"players": [mine_raw]}
+            return {"players": [r for r in (mine_raw, added_raw, starter, fa_raw) if r["id"] in ids]}
 
         def league_get(self, params=None, headers=None, extend=""):
-            return {"players": [fa_raw]}
+            if params.get("view") == "mSettings":
+                items = [{"statId": 0, "points": 1.0}, {"statId": 2, "points": 4.0}, {"statId": 11, "points": -2.0}]
+                return {"settings": {"scoringSettings": {"scoringItems": items}}}
+            if params.get("view") == "mRoster":
+                assert params["scoringPeriodId"] == 11
+                entries = [roster_entry(mine_raw, 4, "ADD"), roster_entry(added_raw, 12, "ADD")]
+                return {"teams": [{"id": 1, "roster": {"entries": entries}}]}
+            # ESPN's free agent list already hides players added today
+            return {"players": [fa_raw, mine_raw]}
 
     my_team = SimpleNamespace(team_id=1, team_name="Mine",
                               roster=[Player(roster_entry(mine_raw, 4, "ADD"), 2027)])
@@ -188,14 +359,89 @@ def test_snapshot_end_to_end_with_fake_league():
                              pro_schedule=pro_schedule, espn_request=FakeRequests())
 
     src = object.__new__(EspnSource)
-    src.cfg, src.league, src.points_league = cfg(chopping_block=[]), league, True
+    src.cfg, src.league, src.points_league = cfg(), league, True
     src._games_by_team = src._build_game_index()
     snap = src.snapshot()
 
     assert snap.horizon == [10, 11, 12, 13]
     assert snap.my_roster[0].lineup_slot == "C" and snap.my_roster[0].acquisition_type == "ADD"
     assert snap.period_dates[10] == date(2026, 10, 28)  # 11pm UTC game stays on the US Eastern day
+    assert [p.name for p in snap.next_roster] == ["My Late Pick", "Added Today"]
+    assert snap.move_horizon == [11, 12, 13, 14]
+    assert [p.name for p in snap.free_agents] == ["Waiver Backup"]  # rostered players filtered out
+    assert snap.scoring == {"PTS": 1.0, "STL": 4.0, "TO": -2.0}
+
+    src.attach_game_logs(needs_game_logs(snap, src.cfg))
+    assert snap.free_agents[0].game_log == {}  # fetched, no games in the fake card
 
     report = build_report(snap, src.cfg)
-    assert report.moves and report.moves[0].add.player.name == "Waiver Backup"
+    assert report.moves and report.moves[0].add.player.name == "Waiver Backup"  # 14/g vs 4/g
     assert report.moves[0].drop.player.name == "My Late Pick"
+
+
+def test_adapter_ignores_zero_splits_for_players_who_havent_played():
+    src = object.__new__(EspnSource)
+    src.cfg, src.points_league = cfg(), True
+    src._games_by_team = {13: games(10, 11)}
+    raw = _raw_player(98, "Not Played Yet", 0.0, 0.0, status="OUT")
+    v = src._view(Player(raw, 2027), "me", raw)
+    assert set(v.fpts) == {"projected"}  # no minutes in the season or recent splits
+
+
+def test_adapter_reads_this_seasons_game_log():
+    src = object.__new__(EspnSource)
+    src.cfg, src.points_league = cfg(), True
+    raw = _raw_player(97, "Logged", 20.0, 25.0)
+    def game(season, sp, fpts, minutes, split=5, source=0):
+        return {"seasonId": season, "id": "054018", "scoringPeriodId": sp, "statSourceId": source,
+                "statSplitTypeId": split, "appliedTotal": fpts, "stats": {"0": fpts / 2, "40": minutes}}
+    raw["player"]["stats"] += [
+        game(2027, 2, 19.0, 18.0),
+        game(2027, 4, 0.0, 0.0),  # did not play
+        game(2026, 150, 40.0, 30.0),  # last season
+        game(2027, 6, 33.0, 30.0, source=1),  # projection, not a real game
+    ]
+    assert src._game_log(raw) == {2: GameLog(19.0, 18.0)}
+    src.points_league = False  # category league: standard points from the box score (PTS only here)
+    assert src._game_log(raw) == {2: GameLog(9.5, 18.0)}
+
+
+# ---- lineup slots ------------------------------------------------------------
+def test_best_lineup_moves_a_flexible_player_to_fit_another():
+    from fantasy_bot.lineup import best_lineup
+    flex = pv(50, "Flex Guard", "BOS", 2, ["PG", "UT"], 30, 30, [10])
+    ut_only = pv(51, "UT Only", "BOS", 2, ["UT"], 25, 30, [10])
+    big = pv(52, "Big", "BOS", 2, ["C", "UT"], 20, 30, [10])
+    # Flex Guard takes UT first, then slides to PG so UT Only can start. Big is left over.
+    names = {p.name for p in best_lineup([(flex, 30), (ut_only, 25), (big, 20)], ["UT", "PG"])}
+    assert names == {"Flex Guard", "UT Only"}
+    # Two bigs can't both start at one C and one guard slot.
+    other_big = pv(53, "Other Big", "BOS", 2, ["C"], 28, 30, [10])
+    names = {p.name for p in best_lineup([(big, 20), (other_big, 28), (flex, 10)], ["C", "PG"])}
+    assert names == {"Other Big", "Flex Guard"}
+
+
+def test_pickup_only_counts_games_he_would_start():
+    snap = scenario()
+    snap.lineup_slots = {"UT": 2, "BE": 3}  # two starters a day
+    r = build_report(snap, cfg(max_moves=5))
+    backup = next(m for m in r.moves if m.add.player.name == "Lakers Backup C")
+    # Unlimited slots made this +112. With two a day, Backup C mostly pushes Bench Guard to
+    # the bench rather than adding his full value. Dropping either streaming spot gains the
+    # same 64, and the tie goes to the weaker player per game.
+    assert backup.gain == pytest.approx(64)
+    assert backup.drop.player.name == "Late Pick A"
+    assert backup.add_starts == 4 and backup.drop_starts == 1 and backup.drop_games == 2
+    # Heat Backup F's extra game falls on days he wouldn't start, so he no longer clears the bar.
+    assert "Heat Backup F" not in [m.add.player.name for m in r.moves]
+    assert "starts 0 of his 1 game" in render(r)
+
+
+def test_your_own_backup_keeps_his_role_value_after_you_add_him():
+    snap = scenario()
+    backup = fa(snap, 30)
+    snap.free_agents.remove(backup)
+    snap.next_roster = [p for p in snap.my_roster if p.name != "Old Stream"] + [backup]
+    r = build_report(snap, cfg())
+    assert r.per_game[backup.id] == 32  # not his blended 15, so he isn't churned straight back out
+    assert backup.id not in r.streamers

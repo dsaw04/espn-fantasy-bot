@@ -34,6 +34,18 @@ class HashtagLine:
     total: float = 0.0
     hashtag_id: Optional[int] = None
 
+    def fpts(self, scoring: Dict[str, float]) -> float:
+        """Per game fantasy points under a league's points per stat."""
+        return sum(self.stats.get(stat, 0.0) * pts for stat, pts in scoring.items())
+
+
+@dataclass
+class GameLog:
+    """One game a player actually played in."""
+
+    fpts: float
+    minutes: float
+
 
 @dataclass
 class PlayerView:
@@ -49,6 +61,7 @@ class PlayerView:
     fpts: Dict[str, float] = field(default_factory=dict)
     # minutes per game by split
     mpg: Dict[str, float] = field(default_factory=dict)
+    games_played: int = 0  # this season
     # scoring period id -> game datetime for this player's pro team
     games: Dict[int, datetime] = field(default_factory=dict)
     acquisition_type: str = ""
@@ -56,6 +69,9 @@ class PlayerView:
     percent_owned: float = 0.0
     # Hashtag Basketball rankings by window: "season", "last_7", "last_14", "last_30"
     hashtag: Dict[str, HashtagLine] = field(default_factory=dict)
+    # scoring period id -> stats, for games he played this season. None until fetched,
+    # which only happens for injured rotation players and their free agent teammates.
+    game_log: Optional[Dict[int, GameLog]] = None
 
     @property
     def positions(self) -> Set[str]:
@@ -94,9 +110,30 @@ class Snapshot:
     other_rostered: List[PlayerView]
     free_agents: List[PlayerView]
     period_dates: Dict[int, date] = field(default_factory=dict)
+    # My roster next scoring period, with today's adds and drops applied. None if unknown.
+    next_roster: Optional[List[PlayerView]] = None
+    # Scoring periods a move made now would play in. Empty means the same as horizon.
+    move_horizon: List[int] = field(default_factory=list)
+    # The league's points per stat ("PTS", "STL", ...). Empty in category leagues.
+    scoring: Dict[str, float] = field(default_factory=dict)
+    # Lineup slot counts from the league settings ({"PG": 1, "UT": 3, "BE": 3, ...}).
+    # Empty means unknown, and every game a player has counts.
+    lineup_slots: Dict[str, int] = field(default_factory=dict)
+
+    def roster_for_moves(self) -> List[PlayerView]:
+        return self.my_roster if self.next_roster is None else self.next_roster
+
+    def move_days(self) -> List[int]:
+        return self.move_horizon or self.horizon
 
     def all_players(self) -> List[PlayerView]:
-        return self.my_roster + self.other_rostered + self.free_agents
+        seen: Set[int] = set()
+        out = []
+        for p in self.my_roster + (self.next_roster or []) + self.other_rostered + self.free_agents:
+            if p.id not in seen:
+                seen.add(p.id)
+                out.append(p)
+        return out
 
 
 def n_games(n: int) -> str:

@@ -10,6 +10,7 @@ import requests
 from . import hashtag
 from .config import Config, load_config
 from .model import Snapshot
+from .opportunity import needs_game_logs
 from .recommend import build_report
 from .report import post_to_discord, render
 
@@ -47,6 +48,7 @@ def main() -> None:
         return
 
     snap = source.snapshot()
+    source.attach_game_logs(needs_game_logs(snap, cfg))
     if cfg.hashtag_enabled:
         add_hashtag_rankings(snap, cfg)
 

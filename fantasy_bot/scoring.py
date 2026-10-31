@@ -19,13 +19,19 @@ from .config import Config
 from .model import PlayerView, Snapshot
 
 
+# ESPN's projection counts as much as this many real games. Its weight fades as a
+# player's games pile up, so a preseason guess can't hold down a breakout for long.
+PROJECTION_GAMES = 5
+
+
 def per_game_value(p: PlayerView, cfg: Config) -> float:
     w = cfg.weights
+    played = len(p.game_log) if p.game_log is not None else p.games_played
     parts = [
         (p.fpts.get("last_7"), w.last_7),
         (p.fpts.get("last_15"), w.last_15),
         (p.fpts.get("season"), w.season),
-        (p.fpts.get("projected"), w.projected),
+        (p.fpts.get("projected"), w.projected * PROJECTION_GAMES / (PROJECTION_GAMES + played)),
     ]
     used = [(v, wt) for v, wt in parts if v is not None and wt > 0]
     if not used:
@@ -39,13 +45,6 @@ def minutes(p: PlayerView) -> float:
         if p.mpg.get(key):
             return p.mpg[key]
     return 0.0
-
-
-def minutes_trend(p: PlayerView) -> float:
-    recent, season = p.mpg.get("last_7"), p.mpg.get("season")
-    if recent is None or season is None:
-        return 0.0
-    return recent - season
 
 
 def is_out_on(p: PlayerView, day: Optional[date]) -> bool:
@@ -129,6 +128,8 @@ class Scorer:
                 continue
             if minutes(inj) < self.cfg.min_minutes_for_depth:
                 continue
+            if "season" not in inj.mpg:
+                continue  # out all season, so the candidate's stats already reflect the bigger role
             shared = p.positions & inj.positions
             if not shared:
                 continue
@@ -144,12 +145,12 @@ class Scorer:
             out.append(DepthOpening(inj, inj_value, overlap, len(competitors), boost))
         return out
 
-    def value(self, p: PlayerView) -> Valuation:
+    def value(self, p: PlayerView, horizon: Optional[List[int]] = None) -> Valuation:
         base = self.base(p)
         openings = self.openings_for(p)
         expected = 0.0
         games = 0
-        for sp in self.snap.horizon:
+        for sp in self.snap.horizon if horizon is None else horizon:
             if sp not in p.games:
                 continue
             day = self.snap.period_dates.get(sp)

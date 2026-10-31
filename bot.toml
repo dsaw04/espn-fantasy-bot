@@ -2,22 +2,21 @@
 # or env vars ESPN_S2, ESPN_SWID, DISCORD_WEBHOOK_URL. Env vars override this file.
 
 [league]
-league_id = 123456789      # from the league URL: ...?leagueId=123456789
+league_id = 1826277500     # from the league URL: ...?leagueId=123456789
 year = 2027                # ESPN names NBA seasons by the year they END in (2026-27 = 2027)
-team_id = 1                # run `python -m fantasy_bot --list-teams` to find yours
+team_id = 3                # run `python -m fantasy_bot --list-teams` to find yours
 
 [bot]
-# Your late round picks. Names must match ESPN spelling.
-chopping_block = ["Late Pick One", "Late Pick Two", "Late Pick Three"]
-# Anyone you've picked up from waivers or free agency is automatically droppable,
-# so streamers rotate out without you editing this file every day.
-auto_chop_pickups = true
-# Pickups that turned out good and should stay off the block.
-untouchable = []
+# Anyone on your roster can be suggested as a drop, except these.
+# Names must match ESPN spelling.
+untouchable = ["Cade Cunningham", "Cooper Flagg"]
 
-horizon_days = 4           # how many days ahead to count games
+horizon_days = 7           # how many days ahead to count games
 max_moves = 2              # most add/drop suggestions per day
-min_gain = 5.0             # only suggest a move if it gains at least this many fpts over the horizon
+streaming_spots = 2        # your weakest N players rotate whenever someone beats them...
+stream_min_gain = 10.0     # ...by this many fpts over the horizon
+min_edge = 4.0             # everyone else is core: an add must out-score them by this many fpts per game
+min_games_without = 3      # games a backup must have played without the injured starter to count his new role
 free_agent_pool = 300      # how many free agents to scan, by ownership
 min_minutes_for_depth = 18 # an injured player must average this to open up a role
 absorb_rate = 0.5          # share of an injured player's production backups pick up

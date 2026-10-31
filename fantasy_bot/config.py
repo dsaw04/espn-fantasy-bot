@@ -25,16 +25,18 @@ class Config:
     espn_s2: Optional[str] = None
     swid: Optional[str] = None
 
-    chopping_block: List[str] = field(default_factory=list)
-    # Treat anyone you picked up off waivers or free agency as droppable too.
-    # This is what keeps the daily streaming loop going without editing config.
-    auto_chop_pickups: bool = True
-    # Never suggest dropping these, even if picked up.
+    # Everyone else on the roster can be suggested as a drop.
     untouchable: List[str] = field(default_factory=list)
 
-    horizon_days: int = 4
+    horizon_days: int = 7
     max_moves: int = 2
-    min_gain: float = 5.0  # minimum expected fantasy points gained over the horizon
+    # Your weakest N players are streaming spots: they rotate whenever someone
+    # beats them by stream_min_gain fpts over the horizon. Everyone else is core
+    # and only moves for a per game upgrade of min_edge.
+    streaming_spots: int = 2
+    stream_min_gain: float = 10.0
+    min_edge: float = 4.0  # an add must out-score a core player by this many fpts per game
+    min_games_without: int = 3  # games a backup must have played without the injured starter
     free_agent_pool: int = 300
     min_minutes_for_depth: float = 18.0  # an injured player must play this much to matter
     absorb_rate: float = 0.5  # share of an injured player's output that flows to backups
@@ -77,12 +79,13 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         team_id=int(env("ESPN_TEAM_ID", league.get("team_id", 0))),
         espn_s2=env("ESPN_S2", league.get("espn_s2")),
         swid=env("ESPN_SWID", league.get("swid")),
-        chopping_block=list(bot.get("chopping_block", [])),
-        auto_chop_pickups=bool(bot.get("auto_chop_pickups", True)),
         untouchable=list(bot.get("untouchable", [])),
-        horizon_days=int(bot.get("horizon_days", 4)),
+        horizon_days=int(bot.get("horizon_days", 7)),
         max_moves=int(bot.get("max_moves", 2)),
-        min_gain=float(bot.get("min_gain", 5.0)),
+        streaming_spots=int(bot.get("streaming_spots", 2)),
+        stream_min_gain=float(bot.get("stream_min_gain", 10.0)),
+        min_edge=float(bot.get("min_edge", 4.0)),
+        min_games_without=int(bot.get("min_games_without", 3)),
         free_agent_pool=int(bot.get("free_agent_pool", 300)),
         min_minutes_for_depth=float(bot.get("min_minutes_for_depth", 18.0)),
         absorb_rate=float(bot.get("absorb_rate", 0.5)),
