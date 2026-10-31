@@ -7,6 +7,7 @@ import requests
 
 from fantasy_bot import hashtag
 from fantasy_bot.__main__ import add_hashtag_rankings
+from fantasy_bot.config import load_config
 from fantasy_bot.model import HashtagLine, PlayerView, Snapshot
 from test_bot import cfg
 
@@ -99,6 +100,38 @@ def test_fetch_picks_window_then_shows_all_players():
     assert posts[2]["ctl00$ContentPlaceHolder1$DDDURATION"] == "14"
 
 
+def test_fetch_sets_the_table_and_multipliers_on_every_postback():
+    s = FakeSession()
+    hashtag.fetch_rankings(["season"], session=s)
+    for post in [d for kind, d in s.calls if kind == "POST"]:
+        field = {k.split("$")[-1]: v for k, v in post.items()}
+        assert (field["DDRANK"], field["DDTYPE"]) == ("AVG", "H2H")  # per game averages, not totals
+        assert (field["DDSTL"], field["DDBLK"], field["DDTO"], field["DDPTS"]) == ("1.25", "1.25", ".25", "1")
+
+    s = FakeSession()
+    hashtag.fetch_rankings(["season"], multipliers={"STL": 2, "TO": 0.5}, session=s)
+    field = {k.split("$")[-1]: v for k, v in s.calls[1][1].items()}
+    assert (field["DDSTL"], field["DDTO"], field["DDBLK"]) == ("2", ".5", "1")  # BLK left at the page's x1
+
+
+def test_fetch_notices_when_the_page_ignores_a_multiplier():
+    with pytest.raises(hashtag.HashtagError, match="DDSTL"):
+        hashtag.fetch_rankings(["season"], session=FakeSession(ignore={"DDSTL"}))
+
+
+def test_multipliers_must_be_ones_the_page_offers(tmp_path):
+    with pytest.raises(ValueError, match="FGM"):
+        hashtag.table_settings({"FGM": 1})  # unticked by default, so its dropdown is disabled
+    with pytest.raises(ValueError, match="isn't offered"):
+        hashtag.table_settings({"STL": 1.1})
+    toml = tmp_path / "bot.toml"
+    toml.write_text('[league]\nleague_id = 1\nyear = 2027\nteam_id = 1\n[hashtag]\nmultipliers = { STL = 4 }\n')
+    with pytest.raises(SystemExit, match="STL multiplier 4"):
+        load_config(toml, tmp_path / "none.toml")
+    toml.write_text('[league]\nleague_id = 1\nyear = 2027\nteam_id = 1\n[hashtag]\nmultipliers = { STL = 1.5 }\n')
+    assert load_config(toml, tmp_path / "none.toml").hashtag_multipliers["STL"] == 1.5
+
+
 def test_fetch_notices_when_the_page_ignores_a_postback():
     with pytest.raises(hashtag.HashtagError, match="DDSHOW"):
         hashtag.fetch_rankings(["season"], session=FakeSession(ignore={"DDSHOW"}))
@@ -137,6 +170,15 @@ def test_attach_matches_by_name_and_breaks_ties_by_team():
     assert jokic.hashtag["season"].total == 10.0 and jokic.hashtag["last_7"].total == 12.0
     assert a_lal.hashtag["season"].total == 2.0 and "last_7" not in a_lal.hashtag
     assert nobody.hashtag == {}
+
+
+def test_rank_by_points_uses_the_leagues_scoring():
+    lines = hashtag.parse_rankings(FIXTURE)
+    hashtag.rank_by_points(hashtag.Rankings(updated=None, windows={"season": lines}), {"STL": 4, "BLK": 4})
+    by_points = sorted(lines, key=lambda l: l.points_rank)
+    assert [l.points_rank for l in by_points] == [1, 2, 3, 4]
+    stocks = [4 * (l.stats["STL"] + l.stats["BLK"]) for l in by_points]
+    assert stocks == sorted(stocks, reverse=True)
 
 
 def test_write_csv_keeps_latest_and_dated_copy(tmp_path):

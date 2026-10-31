@@ -30,9 +30,11 @@ class HashtagLine:
     stats: Dict[str, float] = field(default_factory=dict)
     # z-score per category, higher is better in every one (TO included)
     zscores: Dict[str, float] = field(default_factory=dict)
-    # Hashtag's overall per game value: the z-scores summed with its default H2H weights (TO counts x0.25)
+    # Hashtag's overall per game value: the z-scores summed with the scrape's category multipliers
     total: float = 0.0
     hashtag_id: Optional[int] = None
+    # Rank in this window by fpts per game under the league's scoring. None in category leagues.
+    points_rank: Optional[int] = None
 
     def fpts(self, scoring: Dict[str, float]) -> float:
         """Per game fantasy points under a league's points per stat."""

@@ -3,7 +3,9 @@
 expected value = sum over upcoming games of
     availability on that day x (per game value + depth boost on that day)
 
-per game value  blends recent form, season average and ESPN's projection.
+per game value  blends recent form, season average, ESPN's projection and, in a
+                points league, Hashtag Basketball's per game stats scored with
+                the league's points.
 depth boost     is the extra production a player should get while an injured
                 teammate who shares his position is sitting out.
 availability    is 0 while a player is out, a discount when day-to-day, else 1.
@@ -23,8 +25,32 @@ from .model import PlayerView, Snapshot
 # player's games pile up, so a preseason guess can't hold down a breakout for long.
 PROJECTION_GAMES = 5
 
+# Hashtag windows to blend in, in order of preference. Two weeks is recent enough to
+# catch a new role and long enough that one game doesn't swing it.
+HASHTAG_BLEND = ("last_14", "last_30", "season", "last_7")
 
-def per_game_value(p: PlayerView, cfg: Config) -> float:
+
+def hashtag_behind(p: PlayerView) -> int:
+    """Games ESPN has counted that Hashtag hasn't yet. Hashtag updates once a day, so a
+    late West Coast game from last night can be missing."""
+    season = p.hashtag.get("season")
+    return max(0, p.games_played - season.games) if season else 0
+
+
+def hashtag_fpts(p: PlayerView, scoring: Dict[str, float]) -> Optional[float]:
+    """Hashtag's per game stats scored with the league's points. None in category leagues,
+    where its 9-cat value doesn't translate into points, when he has no line, or when it's
+    missing games ESPN already has (a big night would count against him)."""
+    if not scoring or hashtag_behind(p):
+        return None
+    for window in HASHTAG_BLEND:
+        line = p.hashtag.get(window)
+        if line and line.games:
+            return line.fpts(scoring)
+    return None
+
+
+def per_game_value(p: PlayerView, cfg: Config, scoring: Optional[Dict[str, float]] = None) -> float:
     w = cfg.weights
     played = len(p.game_log) if p.game_log is not None else p.games_played
     parts = [
@@ -32,6 +58,7 @@ def per_game_value(p: PlayerView, cfg: Config) -> float:
         (p.fpts.get("last_15"), w.last_15),
         (p.fpts.get("season"), w.season),
         (p.fpts.get("projected"), w.projected * PROJECTION_GAMES / (PROJECTION_GAMES + played)),
+        (hashtag_fpts(p, scoring or {}), w.hashtag),
     ]
     used = [(v, wt) for v, wt in parts if v is not None and wt > 0]
     if not used:
@@ -115,7 +142,7 @@ class Scorer:
 
     def base(self, p: PlayerView) -> float:
         if p.id not in self._base:
-            self._base[p.id] = per_game_value(p, self.cfg)
+            self._base[p.id] = per_game_value(p, self.cfg, self.snap.scoring)
         return self._base[p.id]
 
     # Share of vacated work by depth order among non-starters: the next man up

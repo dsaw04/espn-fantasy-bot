@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .hashtag import DEFAULT_MULTIPLIERS, table_settings
+
 
 @dataclass
 class Weights:
@@ -15,6 +17,8 @@ class Weights:
     last_15: float = 0.20
     season: float = 0.20
     projected: float = 0.25
+    # Hashtag Basketball's per game stats scored with your league's points (points leagues only)
+    hashtag: float = 0.25
 
 
 @dataclass
@@ -30,6 +34,7 @@ class Config:
 
     horizon_days: int = 7
     max_moves: int = 2
+    options_shown: int = 10  # swaps listed in all: the moves above, then the next best on their own
     # Your weakest N players are streaming spots: they rotate whenever someone
     # beats them by stream_min_gain fpts over the horizon. Everyone else is core
     # and only moves for a per game upgrade of min_edge.
@@ -54,6 +59,9 @@ class Config:
     hashtag_enabled: bool = True
     hashtag_windows: List[str] = field(default_factory=lambda: ["season", "last_7", "last_14"])
     hashtag_save_dir: Optional[str] = None  # also write the scraped rankings here as CSV
+    # Category multipliers on the rankings page, as set in your browser ("STL": 1.25).
+    # They change Hashtag's TOTAL and rank, not the per game stats the bot values players by.
+    hashtag_multipliers: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_MULTIPLIERS))
 
 
 def _read(path: Path) -> Dict:
@@ -87,6 +95,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         untouchable=list(bot.get("untouchable", [])),
         horizon_days=int(bot.get("horizon_days", 7)),
         max_moves=int(bot.get("max_moves", 2)),
+        options_shown=int(bot.get("options_shown", 10)),
         streaming_spots=int(bot.get("streaming_spots", 2)),
         stream_min_gain=float(bot.get("stream_min_gain", 10.0)),
         min_edge=float(bot.get("min_edge", 4.0)),
@@ -103,10 +112,15 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         hashtag_enabled=bool(htb.get("enabled", True)),
         hashtag_windows=list(htb.get("windows", ["season", "last_7", "last_14"])),
         hashtag_save_dir=htb.get("save_dir") or None,
+        hashtag_multipliers={**DEFAULT_MULTIPLIERS, **{k: float(v) for k, v in htb.get("multipliers", {}).items()}},
     )
     bad = set(cfg.hashtag_windows) - {"season", "last_7", "last_14", "last_30"}
     if bad:
         raise SystemExit(f"[hashtag] windows has unknown entries {sorted(bad)}.")
+    try:
+        table_settings(cfg.hashtag_multipliers)
+    except ValueError as e:
+        raise SystemExit(f"[hashtag] multipliers: {e}.")
     if not (cfg.league_id and cfg.year and cfg.team_id):
         raise SystemExit(
             "league_id, year and team_id are required (config.toml or ESPN_* env vars)."

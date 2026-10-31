@@ -207,6 +207,40 @@ def test_holds_when_nobody_clears_either_bar():
     assert "Hold. No pickup over your streaming spots (Late Pick A and Old Stream) beats them by 1000+ fpts" in render(r)
 
 
+def test_lists_the_next_best_swaps_after_the_picks():
+    r = build_report(scenario(), cfg(max_moves=1))
+    assert [m.add.player.name for m in r.moves] == ["Lakers Backup C"]
+    names = [m.add.player.name for m in r.options]
+    assert "Lakers Backup C" not in names and "Hurt FA" not in names
+    gains = [m.gain for m in r.options]
+    assert gains == sorted(gains, reverse=True) and all(g > 0 for g in gains)
+    # Judged against the roster as it is, so Old Stream is still there to drop.
+    heat = r.options[0]
+    assert heat.add.player.name == "Heat Backup F" and heat.drop.player.name == "Old Stream"
+    assert heat.gain == pytest.approx(26)  # 3 games x 14, less Old Stream's 16
+    text = render(r)
+    assert "Other options, each judged on its own" in text and "2. Add **Heat Backup F**" in text
+    assert len(build_report(scenario(), cfg(max_moves=1, options_shown=2)).options) == 1
+
+
+def test_hold_still_lists_the_closest_options():
+    r = build_report(scenario(), cfg(min_edge=1000, stream_min_gain=1000))
+    assert r.moves == [] and r.options
+    assert "Closest options:\n1. Add **Lakers Backup C**" in render(r)
+
+
+def test_picks_the_swap_that_helps_most_not_the_one_with_most_fpts():
+    snap = scenario()
+    snap.lineup_slots = {"UT": 2, "BE": 3}  # two starters a day, and none of yours play on day 13
+    snap.free_agents = [
+        pv(50, "Crowded Out", "SAS", 24, G, 32, 30, [11, 12]),  # 64 fpts, but only 7 a game over Bench Guard
+        pv(51, "Open Night", "NYK", 18, G, 20, 25, [10, 13]),  # 40 fpts, and 20 of them on an empty day
+    ]
+    r = build_report(snap, cfg(max_moves=1))
+    assert [m.add.player.name for m in r.moves] == ["Open Night"] and r.moves[0].gain == pytest.approx(26)
+    assert [m.add.player.name for m in r.options] == ["Crowded Out"] and r.options[0].gain == pytest.approx(14)
+
+
 def test_fresh_injury_shows_up_as_an_estimate_on_the_watch_list():
     r = build_report(scenario(), cfg(max_moves=1))
     w = next(w for w in r.watchlist if w.player.name == "Heat Backup F")
@@ -259,6 +293,34 @@ def test_hashtag_lines_are_scored_with_the_league_points():
     reasons = build_report(snap, cfg()).moves[0].reasons
     # 20 + 2x4 - 1x2 = 26, and 10 + 3x2 = 16
     assert "Hashtag stats in your scoring (last 14 days): Lakers Backup C 26.0 fpts/g, Old Stream 16.0" in reasons
+
+
+def test_hashtag_points_count_toward_per_game_value():
+    def value(scoring, games_played=5):
+        snap = scenario()
+        snap.scoring = scoring
+        p = pv(40, "Hot Start", "UTA", 26, C, 20, 27, [10], games_played=games_played)
+        line = HashtagLine(name="Hot Start", team="UTA", positions=[], rank=300, games=5, mpg=27, stats={"PTS": 30})
+        p.hashtag = {"season": line, "last_14": line}
+        return Scorer(snap, cfg()).base(p)
+
+    # ESPN's splits say 20 (projection at 0.25 x 5/10), Hashtag says 30 at 0.25
+    assert value({"PTS": 1}) == pytest.approx((20 * 0.675 + 30 * 0.25) / 0.925)
+    assert value({}) == pytest.approx(20)  # a category league: its 9-cat line isn't points
+    assert value({"PTS": 1}, games_played=6) == pytest.approx(20)  # Hashtag hasn't got his last game yet
+
+
+def test_hashtag_reason_shows_the_points_rank_and_a_missing_game():
+    snap = scenario()
+    _hashtag(snap)
+    snap.scoring = {"PTS": 1, "AST": 2, "STL": 4, "TO": -2}
+    backup = fa(snap, 30)
+    backup.hashtag["last_14"].points_rank = 40
+    backup.hashtag["season"] = HashtagLine(name="Lakers Backup C", team="", positions=[], rank=1, games=4, mpg=20)
+    backup.games_played = 5
+    reasons = build_report(snap, cfg()).moves[0].reasons
+    assert "Hashtag stats in your scoring (last 14 days): Lakers Backup C 26.0 fpts/g (#40, missing his last game), " \
+           "Old Stream 16.0" in reasons
 
 
 def test_category_leagues_get_the_hashtag_rank():
@@ -552,7 +614,7 @@ def test_a_decided_week_judges_pickups_on_next_week():
 
 def test_no_moves_once_the_matchups_adds_are_used():
     r = build_report(with_matchup(scenario(), used=7), cfg())
-    assert r.moves == []
+    assert r.moves == [] and r.options == []
     assert "Out of adds: all 7 used this matchup" in render(r)
 
 

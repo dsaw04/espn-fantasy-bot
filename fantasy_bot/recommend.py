@@ -12,7 +12,7 @@ from .lineup import TodayPlan, Week, todays_lineup
 from .matchup import Judge, Verdict
 from .model import MatchupState, PlayerView, Snapshot, n_games
 from .opportunity import Opportunity, fresh_injuries, opportunities
-from .scoring import Role, Scorer, Valuation, availability_on, value_on
+from .scoring import Role, Scorer, Valuation, availability_on, hashtag_behind, value_on
 
 
 @dataclass
@@ -55,6 +55,7 @@ class Report:
     injured_on_roster: List[PlayerView]
     lineup: TodayPlan
     moves: List[Move]
+    options: List[Move]  # the next best swaps, each judged on its own, best first
     roster: List[Valuation]  # everyone you could drop, weakest per game first
     watchlist: List[Watch]
     streamers: Set[int] = field(default_factory=set)  # ids of the streaming spots
@@ -85,6 +86,8 @@ def droppable(snap: Snapshot, cfg: Config) -> List[PlayerView]:
 
 
 OPEN_DAYS_SHOWN = 7
+# A swap has to add something to be listed as an option: win chance, or fpts without a matchup.
+OPTION_FLOOR = 1e-6
 
 HASHTAG_WINDOWS = (("last_14", "last 14 days"), ("season", "season"), ("last_7", "last 7 days"))
 
@@ -98,11 +101,18 @@ def _hashtag_reason(add: PlayerView, drop: PlayerView, scoring: Dict[str, float]
         if a and d:
             if scoring:
                 return (
-                    f"Hashtag stats in your scoring ({label}): {add.name} {a.fpts(scoring):.1f} fpts/g, "
-                    f"{drop.name} {d.fpts(scoring):.1f}"
+                    f"Hashtag stats in your scoring ({label}): {add.name} {a.fpts(scoring):.1f} fpts/g{_rank(a, add)}, "
+                    f"{drop.name} {d.fpts(scoring):.1f}{_rank(d, drop)}"
                 )
             return f"Hashtag 9-cat rank ({label}): {add.name} #{a.rank}, {drop.name} #{d.rank}"
     return None
+
+
+def _rank(line, p: PlayerView) -> str:
+    notes = [f"#{line.points_rank}"] if line.points_rank else []
+    if behind := hashtag_behind(p):
+        notes.append("missing his last game" if behind == 1 else f"missing his last {behind} games")
+    return f" ({', '.join(notes)})" if notes else ""
 
 
 def _pos(p: PlayerView) -> str:
@@ -138,6 +148,25 @@ def _reasons(m: Move, horizon: int, scoring: Dict[str, float]) -> List[str]:
         r.append(f"note: {a.name} is listed {a.status_label()}")
     if a.available_from:
         r.append(f"he's on waivers: put in a claim, and he's yours from {a.available_from:%b %d}")
+    if (ht := _hashtag_reason(a, d, scoring)) is not None:
+        r.append(ht)
+    return r
+
+
+def _option_reasons(m: Move, horizon: int, scoring: Dict[str, float]) -> List[str]:
+    """The short version, for swaps the bot isn't making itself."""
+    a, d, opp = m.add.player, m.drop.player, m.opportunity
+    line = (
+        f"next {horizon} days: starts {m.add_starts} of his {n_games(m.add_games)} (~{m.per_game:.1f}/g), "
+        f"{d.name} {m.drop_starts} of {m.drop_games} (~{m.drop_per_game:.1f}/g)"
+    )
+    if opp:
+        line += f". {opp.injured.name} is {opp.injured.status_label()}, {n_games(opp.without_him.games)} without him"
+    if a.is_risky:
+        line += f". {a.status_label()}"
+    if a.available_from:
+        line += f". On waivers, yours from {a.available_from:%b %d}"
+    r = [line]
     if (ht := _hashtag_reason(a, d, scoring)) is not None:
         r.append(ht)
     return r
@@ -202,13 +231,47 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
     roster.sort(key=lambda v: value[v.player.id])
     streamers = {v.player.id for v in roster[: cfg.streaming_spots]}
     # Everyone you'd field, untouchables included.
-    lineup = [(p, roles[p.id]) for p in snap.roster_for_moves()]
+    lineup = start = [(p, roles[p.id]) for p in snap.roster_for_moves()]
     verdict = before = judge(lineup)
     bar = judge.bar()
 
-    def swap(add: PlayerView, per_game, drop: Valuation):
-        trial = [x for x in lineup if x[0].id != drop.player.id] + [(add, per_game)]
-        return trial, judge(trial)
+    def best_swap(add: Valuation, per_game: float, opp: Optional[Opportunity], role, expected: float,
+                  lineup, verdict, drops: List[Valuation], floor: float):
+        """The best drop for this add against this lineup: the streaming spot the move helps
+        most, if it helps by floor or more. Failing that, core players only for a consistent per
+        game upgrade, judged per game and not on the next few days, so an injured regular is
+        never dropped for being worth 0 this week. Returns (move, score, lineup, verdict) or None."""
+
+        def swap(drop: Valuation, kind: str):
+            trial = [x for x in lineup if x[0].id != drop.player.id] + [(add.player, role)]
+            after = judge(trial)
+            dv = value[drop.player.id]
+            move = Move(add, drop, kind, per_game, dv, after.week.total - verdict.week.total, per_game - dv, opp)
+            return move, judge.gain(after, verdict), trial, after
+
+        best = None
+        # On fpts, adding a player can gain at most his own expected value, so skip hopeless ones.
+        if expected > 0 and (judge.matchup is not None or expected >= floor):
+            for drop in drops:
+                if drop.player.id in streamers:
+                    found = swap(drop, "stream")
+                    if found[1] >= floor and (best is None or found[1] > best[1]):
+                        best = found
+        if best is None:
+            for drop in drops:  # weakest per game first
+                dv = value[drop.player.id]
+                if drop.player.id not in streamers and per_game - dv >= cfg.min_edge and _consistent(opp, drop.player, dv):
+                    return swap(drop, "core")
+        return best
+
+    def finish(m: Move, score: float, verdict, after, reasons) -> Move:
+        if judge.matchup is not None:
+            m.win_gain, m.before, m.after = score, verdict, after
+        m.add_starts, m.add_games = after.week.starts.get(m.add.player.id, 0), after.week.games.get(m.add.player.id, 0)
+        m.drop_starts = verdict.week.starts.get(m.drop.player.id, 0)
+        m.drop_games = verdict.week.games.get(m.drop.player.id, 0)
+        m.reasons = reasons(m, len(days), snap.scoring)
+        return m
 
     candidates = []
     for p in snap.free_agents:
@@ -219,59 +282,40 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
             continue  # no game before the horizon ends
         per_game, opp = _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)
         role = _role(p, per_game, opp, scorer)
-        candidates.append((_expected(p, role, days, snap, cfg), per_game, opp, v, role))
-    candidates.sort(key=lambda c: c[0], reverse=True)
+        candidates.append((v, per_game, opp, role, _expected(p, role, days, snap, cfg)))
+    candidates.sort(key=lambda c: c[-1], reverse=True)
 
     moves: List[Move] = []
     remaining = list(roster)
     taken: Set[int] = set()
     bet_on: Set[int] = set()  # injured players a recommended add is already leaning on
-    for expected, per_game, opp, add, role in candidates:
-        if len(moves) >= judge.moves_allowed() or not remaining:
+    while len(moves) < judge.moves_allowed() and remaining:
+        # Each round takes the swap that helps most, on top of the moves already taken.
+        # Two pickups never lean on the same injury.
+        found = [
+            f for c in candidates
+            if c[0].player.id not in taken and not (c[2] and c[2].injured.id in bet_on)
+            and (f := best_swap(*c, lineup, verdict, remaining, bar))
+        ]
+        if not found:
             break
-        if opp and opp.injured.id in bet_on:
-            continue  # don't stack two pickups on the same injury
-        best: Optional[Move] = None
-        best_score = 0.0
-        best_trial = None
-        # Streaming spots first, into whichever one the move helps most. On fpts, adding a
-        # player can gain at most his own expected value, so skip hopeless ones.
-        if expected > 0 and (judge.matchup is not None or expected >= bar):
-            for drop in remaining:
-                if drop.player.id not in streamers:
-                    continue
-                trial, after = swap(add.player, role, drop)
-                score = judge.gain(after, verdict)
-                if score >= bar and (best is None or score > best_score):
-                    dv = value[drop.player.id]
-                    best = Move(add, drop, "stream", per_game, dv, after.week.total - verdict.week.total, per_game - dv, opp)
-                    best_score, best_trial = score, (trial, after)
-        # Core players only for a consistent per game upgrade, judged per game and not on the
-        # next few days, so an injured regular is never dropped for being worth 0 this week.
-        if best is None and judge.moves_allowed() > 0:
-            for drop in remaining:  # weakest per game first
-                dv = value[drop.player.id]
-                edge = per_game - dv
-                if drop.player.id not in streamers and edge >= cfg.min_edge and _consistent(opp, drop.player, dv):
-                    trial, after = swap(add.player, role, drop)
-                    best = Move(add, drop, "core", per_game, dv, after.week.total - verdict.week.total, edge, opp)
-                    best_score, best_trial = judge.gain(after, verdict), (trial, after)
-                    break
-        if best is None:
-            continue
-        trial, after = best_trial
-        if judge.matchup is not None:
-            best.win_gain, best.before, best.after = best_score, verdict, after
-        best.add_starts, best.add_games = after.week.starts.get(add.player.id, 0), after.week.games.get(add.player.id, 0)
-        best.drop_starts = verdict.week.starts.get(best.drop.player.id, 0)
-        best.drop_games = verdict.week.games.get(best.drop.player.id, 0)
-        best.reasons = _reasons(best, len(days), snap.scoring)
+        move, score, trial, after = max(found, key=lambda f: f[1])  # ties go to the most expected fpts
+        moves.append(finish(move, score, verdict, after, _reasons))
         lineup, verdict = trial, after  # the next move builds on this one
-        moves.append(best)
-        if opp:
-            bet_on.add(opp.injured.id)
-        taken.add(add.player.id)
-        remaining.remove(best.drop)
+        if move.opportunity:
+            bet_on.add(move.opportunity.injured.id)
+        taken.add(move.add.player.id)
+        remaining.remove(move.drop)
+
+    # The next best swaps, each judged against your roster as it is, not after the moves above.
+    found_options = []
+    if judge.moves_allowed() > 0:
+        for c in candidates:
+            if c[0].player.id not in taken and (found := best_swap(*c, start, before, roster, OPTION_FLOOR)):
+                found_options.append(found)
+    found_options.sort(key=lambda f: f[1], reverse=True)
+    options = [finish(move, score, before, after, _option_reasons)
+               for move, score, _, after in found_options[: max(0, cfg.options_shown - len(moves))]]
 
     weakest = value[roster[0].player.id] if roster else 0.0
     fa_ids = {p.id for p in snap.free_agents}
@@ -292,12 +336,12 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
                 est = scorer.base(p) + boost
                 watch.append(Watch(p, inj, est, 0, est - weakest))
     watch.sort(key=lambda w: w.per_game, reverse=True)
-    return moves, roster, streamers, watch[:5], before, value, judge
+    return moves, options, roster, streamers, watch[:5], before, value, judge
 
 
 def build_report(snap: Snapshot, cfg: Config) -> Report:
     scorer = Scorer(snap, cfg)
-    moves, roster, streamers, watch, before, value, judge = waiver_moves(snap, cfg, scorer)
+    moves, options, roster, streamers, watch, before, value, judge = waiver_moves(snap, cfg, scorer)
     return Report(
         team_name=snap.my_team_name,
         today=snap.today,
@@ -307,6 +351,7 @@ def build_report(snap: Snapshot, cfg: Config) -> Report:
         lineup_min_gain=cfg.lineup_min_gain,
         projection_error=cfg.projection_error,
         moves=moves,
+        options=options,
         roster=roster,
         watchlist=watch,
         streamers=streamers,

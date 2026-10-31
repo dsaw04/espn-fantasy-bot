@@ -12,6 +12,7 @@ team_id = 3                # run `python -m fantasy_bot --list-teams` to find yo
 untouchable = ["Cade Cunningham", "Cooper Flagg"]
 
 max_moves = 2              # most add/drop suggestions per day (never more than the adds you have left)
+options_shown = 10         # swaps listed in all: the picks above, then the next best on their own
 streaming_spots = 2        # your weakest N players rotate whenever a pickup...
 min_win_gain = 0.03        # ...adds this much to your chance of winning this week plus next (0.03 = 3 points)
 projection_error = 0.15    # how far off a per game estimate typically is; widens the win chance spread
@@ -32,6 +33,10 @@ lineup_min_gain = 2.0      # fpts a better lineup must add today before the bot 
 enabled = true
 windows = ["season", "last_7", "last_14"]   # any of season, last_7, last_14, last_30
 # save_dir = "data/hashtag"                 # uncomment to also save CSVs (plus dated copies)
+# Category multipliers, as set on the page in your browser. The scrape starts from the site's
+# defaults (STL and BLK x1), so set them here. Choices: 3, 2.5, 2, 1.5, 1.25, 1, 0.75, 0.5, 0.25.
+# They change Hashtag's TOTAL and rank only; the bot values players on the per game stats.
+multipliers = { "FG%" = 1, "FT%" = 1, "3PM" = 1, PTS = 1, REB = 1, AST = 1, STL = 1.25, BLK = 1.25, TO = 0.25 }
 
 [weights]
 # How much each split counts toward per game value. Lean on projections early
@@ -40,3 +45,4 @@ last_7 = 0.35
 last_15 = 0.20
 season = 0.20
 projected = 0.25
+hashtag = 0.25             # Hashtag's per game stats scored with your league's points (points leagues only)

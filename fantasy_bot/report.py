@@ -9,7 +9,7 @@ import requests
 from .model import n_games
 from .history import brier
 from .lineup import TodayPlan
-from .recommend import Report
+from .recommend import HASHTAG_WINDOWS, Report
 
 
 WEAKEST_SHOWN = 5
@@ -80,6 +80,32 @@ def _win_change(m) -> str:
     return ", ".join(parts) or "no change to your win chances"
 
 
+def _move_lines(moves, r: Report, start: int = 1) -> List[str]:
+    lines = []
+    for i, m in enumerate(moves, start):
+        a = m.add.player
+        head = f"{i}. Add **{a.name}** ({a.pro_team} {_pos(a)}, {a.percent_owned:.0f}% owned), drop **{m.drop.player.name}**"
+        if m.kind == "stream" and m.win_gain is not None:
+            head += f" (streaming spot). ~{_win_change(m)}"
+        elif m.kind == "stream":
+            head += f" (streaming spot). ~{m.gain:+.0f} fpts over the next {r.horizon_days} days"
+        else:
+            head += f". ~{m.edge:+.1f} fpts/g ({m.per_game:.1f} vs {m.drop_per_game:.1f})"
+        lines.append(head)
+        for reason in m.reasons:
+            lines.append(f"   - {reason}")
+    return lines
+
+
+def _hashtag_rank(p) -> str:
+    """Where Hashtag ranks him in the league's scoring, which is what the bot weighs, not its 9-cat rank."""
+    for window, label in HASHTAG_WINDOWS:
+        line = p.hashtag.get(window)
+        if line and line.points_rank:
+            return f" (Hashtag #{line.points_rank} in your scoring, {label})"
+    return ""
+
+
 def _slot(s: str) -> str:
     return "bench" if s == "BE" else s
 
@@ -134,18 +160,7 @@ def render(r: Report) -> str:
 
     lines.append("**Pickups** (adds play from tomorrow)" if r.moves_start_tomorrow else "**Pickups**")
     if r.moves:
-        for i, m in enumerate(r.moves, 1):
-            a = m.add.player
-            head = f"{i}. Add **{a.name}** ({a.pro_team} {_pos(a)}, {a.percent_owned:.0f}% owned), drop **{m.drop.player.name}**"
-            if m.kind == "stream" and m.win_gain is not None:
-                head += f" (streaming spot). ~{_win_change(m)}"
-            elif m.kind == "stream":
-                head += f" (streaming spot). ~{m.gain:+.0f} fpts over the next {r.horizon_days} days"
-            else:
-                head += f". ~{m.edge:+.1f} fpts/g ({m.per_game:.1f} vs {m.drop_per_game:.1f})"
-            lines.append(head)
-            for reason in m.reasons:
-                lines.append(f"   - {reason}")
+        lines += _move_lines(r.moves, r)
     elif r.matchup and r.matchup.adds_left == 0:
         lines.append(
             f"- Out of adds: all {r.matchup.adds_limit} used this matchup. They reset when the next one starts."
@@ -162,6 +177,10 @@ def render(r: Report) -> str:
         )
     else:
         lines.append("- Everyone on your roster is untouchable, so there is nobody to drop.")
+    if r.options:
+        lines.append("Other options, each judged on its own against your roster as it is:" if r.moves
+                     else "Closest options:")
+        lines += _move_lines(r.options, r, start=len(r.moves) + 1)
     lines.append("")
 
     if r.roster:
@@ -174,7 +193,8 @@ def render(r: Report) -> str:
             else:
                 plays = n_games(v.games)
             pg = r.per_game.get(p.id, v.base)
-            lines.append(f"- {p.name}{spot}: ~{pg:.1f} fpts/g, {p.status_label()}, {plays} in the next {r.horizon_days} days")
+            lines.append(f"- {p.name}{spot}: ~{pg:.1f} fpts/g{_hashtag_rank(p)}, {p.status_label()}, "
+                         f"{plays} in the next {r.horizon_days} days")
         lines.append("")
 
     if r.watchlist:

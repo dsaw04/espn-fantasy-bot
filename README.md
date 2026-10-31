@@ -5,7 +5,7 @@ A daily bot built on [cwendt94/espn-api](https://github.com/cwendt94/espn-api). 
 1. **Reads the injury report** for your roster and every NBA player in the league's pool.
 2. **Scouts the depth chart.** When a starter is out, it pulls game logs for the free agent teammates who play his position and splits their games into with him and without him, so you see what each backup has actually done in the bigger role. If the injury is too fresh for that, it estimates the bump instead.
 3. **Sets today's lineup.** It works out the best lineup for today's games that haven't tipped off and lists the changes from the one set in ESPN. Players whose game has started are locked, and it tries to keep everyone in his current slot. It also warns when a healthy player is still on IR, since ESPN then blocks adds and drops.
-4. **Suggests add/drops from your whole roster.** Your weakest couple of players are streaming spots that rotate whenever someone should score more this week. Everyone else is core and only moves for a clear, consistent upgrade.
+4. **Suggests add/drops from your whole roster.** Your weakest couple of players are streaming spots that rotate whenever someone should score more this week. Everyone else is core and only moves for a clear, consistent upgrade. After the moves it would make, it lists the next best swaps (10 in all), so you have options.
 5. **Plays the matchup.** It reads the live score, both opponents' rosters and your adds left, and projects your chance of winning this week and next. Streaming moves are judged by how much they raise those chances.
 
 espn-api is read only, so the bot recommends and you make the moves in the ESPN app.
@@ -17,7 +17,7 @@ expected value = sum over games in the next N days of
                  availability x (per game value + depth bump)
 ```
 
-- **Per game value** blends last 7 days, last 15 days, season average and ESPN's projection. Weights live in `bot.toml`. The projection counts as much as 5 real games, so its weight fades as a player's games pile up and a preseason guess can't hold down a breakout.
+- **Per game value** blends last 7 days, last 15 days, season average, ESPN's projection and, in points leagues, Hashtag Basketball's per game stats scored with your league's points (see below). Weights live in `bot.toml`. The projection counts as much as 5 real games, so its weight fades as a player's games pile up and a preseason guess can't hold down a breakout.
 - **Availability** is 0 while a player is out (until his expected return date), discounted when day-to-day, else 1. Return dates come from ESPN fantasy when it has one, otherwise from ESPN's free [injury report](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries), which also supplies the note shown next to each injured player. If that feed is down the run carries on without it.
 - **Depth bump** is `injured player's fpts x absorb_rate x position overlap x depth share`, applied only on days the injured player misses. It's an estimate, used for the next few days' value and for injuries too fresh to have game logs. Players out all season are skipped, since their backups' stats already reflect the bigger role.
 - Points leagues use ESPN's own fantasy point averages. Category leagues fall back to standard ESPN points as a ranking proxy.
@@ -25,9 +25,11 @@ expected value = sum over games in the next N days of
 
 ## Hashtag Basketball rankings
 
-Each run also scrapes the free [9-cat rankings](https://hashtagbasketball.com/fantasy-basketball-rankings) from Hashtag Basketball for the season and the last 7 and 14 days. It covers every player who has played, not just the top 200, and lists ESPN position eligibility. Each player's line (per game stats, a z-score per category, and Hashtag's overall value) is attached by name to the ESPN player as `PlayerView.hashtag[window]`, so the scoring and reports can use it. Hashtag's rank weighs all nine categories equally, which doesn't match a points league, so in points leagues the bot scores Hashtag's per game stats with your league's own points per stat (read from the ESPN league settings) and shows that next to each move. The scraper is adapted from [cdchan/fantasy-basketball](https://github.com/cdchan/fantasy-basketball/blob/master/scrape_hashtagbasketball.py), whose projections page now shows free users only the top 30.
+Each run also scrapes the free [9-cat rankings](https://hashtagbasketball.com/fantasy-basketball-rankings) from Hashtag Basketball for the season and the last 7 and 14 days. It covers every player who has played, not just the top 200, and lists ESPN position eligibility. Each player's line (per game stats, a z-score per category, and Hashtag's overall value) is attached by name to the ESPN player as `PlayerView.hashtag[window]`, so the scoring and reports can use it. Hashtag's rank weighs all nine categories equally, which doesn't match a points league, so in points leagues the bot scores Hashtag's per game stats with your league's own points per stat (read from the ESPN league settings), ranks every player again on those points, and shows both next to each move and each of your weakest players. A player's Hashtag rank in your scoring can be far from his 9-cat rank: a high volume, low efficiency scorer ranks much better in points.
 
-Settings live under `[hashtag]` in `bot.toml`. If the scrape fails the run logs a warning and carries on without it. To look at the rankings on their own or save CSVs:
+In points leagues that line is also part of each player's per game value, weighted by `hashtag` under `[weights]`, from the last 14 days (or the next window you scrape). Hashtag updates once a day and can miss last night's late games. When its season line has fewer games than ESPN has counted, it's left out of the blend for that player, so a big night doesn't count against him, and the report notes the missing game. The scraper is adapted from [cdchan/fantasy-basketball](https://github.com/cdchan/fantasy-basketball/blob/master/scrape_hashtagbasketball.py), whose projections page now shows free users only the top 30.
+
+Settings live under `[hashtag]` in `bot.toml`. A new session gets the site's default table, not the settings saved in your browser, so the scrape sets them on every request and checks the page applied them: per game averages, H2H, and the category `multipliers` (STL and BLK x1.25, TO x0.25 by default). The multipliers change Hashtag's TOTAL and rank, which go into the CSVs and category league reports. The per game stats and z-scores the bot values players by stay the same. If the scrape fails the run logs a warning and carries on without it. To look at the rankings on their own or save CSVs:
 
 ```bash
 python -m fantasy_bot.hashtag --windows last_7 last_14 --out data/hashtag
@@ -48,12 +50,14 @@ Your own players get the same role based value, so a pickup isn't valued one way
 
 Moves are valued by your **best lineup each day** over the days a move made today would play in (from tomorrow). The bot reads your league's starting slots (PG, SG, SF, PF, C, G, F, 3 UT, for example) and, for each day, fills them with the highest scoring set of players who play that day. A pickup's games only count when he'd start over someone you already have, and a drop only costs the games he'd have started. On a night when 12 of your players have games, the extra games of a busy schedule are worth nothing.
 
-Free agents are tried best first:
+Each free agent is tried against your roster:
 
 - **Streaming spot:** he replaces whichever streaming spot raises your win chances the most (this week plus next, see below), if that's at least `min_win_gain`. Without a matchup to look at, it's fpts over the next `horizon_days` instead, with a bar of `stream_min_gain`.
 - **Core player**, only if no streaming spot works: he has to out-score the player by at least `min_edge` fpts per game, judged per game and not on this week, so an injured regular is never dropped for being worth 0 right now. For an injury pickup, his median game without the starter also has to beat the player's median game, so one huge night can't carry the average.
 
-When nobody clears either bar the report says to hold. The **depth watch** shows the roles that are growing but not there yet: too few games, a smaller edge, or a fresh injury with only an estimate. That's where tomorrow's pickups usually come from.
+The bot takes the swap that helps most, then looks again with that move made, up to `max_moves` (never more than the adds you have left). After its picks, the report lists the next best swaps up to `options_shown` in all, each with the drop that suits it best and judged on its own against your roster as it is. Those are alternatives, not extra moves: several usually share the same drop. They're listed even when they don't clear the bar, as long as they'd add something.
+
+When nobody clears either bar the report says to hold, and still lists the closest options. The **depth watch** shows the roles that are growing but not there yet: too few games, a smaller edge, or a fresh injury with only an estimate. That's where tomorrow's pickups usually come from.
 
 ESPN applies adds and drops from the next scoring period, so moves are judged against tomorrow's roster (today's adds and drops included) and count games from tomorrow.
 
@@ -124,6 +128,7 @@ Local runs only log when given `--data-dir`.
 | --- | --- |
 | `horizon_days` | Without matchup data only: days of games counted for streaming, starting tomorrow. |
 | `streaming_spots` | How many of your weakest players rotate freely. 0 makes everyone core. |
+| `options_shown` | How many swaps the report lists: its own picks, then the next best. |
 | `min_win_gain` | Win chance a streaming move must add, this week plus next (0.03 = 3 points). Raise it to churn less. |
 | `projection_error` | How far off a per game estimate typically is. Higher means less certain win chances. |
 | `stream_min_gain` | Without matchup data only: fpts over the horizon a pickup must beat a streaming spot by. |
@@ -132,7 +137,7 @@ Local runs only log when given `--data-dir`.
 | `min_games_without` | Games a backup must have played without the injured starter before his new role counts. Lower it to jump on injuries earlier, at the cost of smaller samples. |
 | `absorb_rate` | How much of an injured star's output flows to backups. 0.5 is a reasonable starting point. |
 | `min_minutes_for_depth` | Ignore injuries to players who weren't playing real minutes anyway. |
-| `weights` | Lean on `projected` early in the season, then shift to `last_7`/`last_15`. |
+| `weights` | Lean on `projected` early in the season, then shift to `last_7`/`last_15`. `hashtag` sets how much Hashtag's stats count in points leagues. |
 
 ## Tests
 

@@ -10,6 +10,11 @@ The page is ASP.NET WebForms. Changing a dropdown is a form postback that
 carries __VIEWSTATE, so each window costs two POSTs on top of the first GET.
 Picking a window resets the page to 200 rows, so "show all" goes second.
 
+A new session gets the site's default table, not whatever your browser has
+saved, so every postback also sets the table settings: per game averages, H2H,
+and the category multipliers. Those change only TOTAL and the rank; the per
+game stats and per category z-scores are the same whatever they are.
+
 Run on its own with:  python -m fantasy_bot.hashtag [--windows last_7 ...] [--out DIR]
 """
 
@@ -40,6 +45,18 @@ WINDOWS = {"season": "1", "last_7": "7", "last_14": "14", "last_30": "30"}
 DEFAULT_WINDOWS = ("season", "last_7", "last_14")
 SHOW_ALL = "900"
 ESPN_POSITIONS = "3"  # DDPOSFROM: list ESPN position eligibility
+# Per game averages (not season totals, which would break every per game number), ranked for H2H.
+TABLE = {"DDRANK": "AVG", "DDTYPE": "H2H"}
+# Category -> its multiplier dropdown. Only the nine ticked 9-cat boxes can be set: the
+# page disables the dropdowns of unticked ones.
+MULTIPLIER_CONTROLS = {
+    "FG%": "DDFGP", "FT%": "DDFTP", "3PM": "DD3PM", "PTS": "DDPTS", "REB": "DDREB",
+    "AST": "DDAST", "STL": "DDSTL", "BLK": "DDBLK", "TO": "DDTO",
+}
+MULTIPLIER_CHOICES = (3, 2.5, 2, 1.5, 1.25, 1, 0.75, 0.5, 0.25)
+DEFAULT_MULTIPLIERS = {
+    "FG%": 1, "FT%": 1, "3PM": 1, "PTS": 1, "REB": 1, "AST": 1, "STL": 1.25, "BLK": 1.25, "TO": 0.25,
+}
 
 # Hashtag abbreviations that differ from espn-api's
 TEAM_TO_ESPN = {"GS": "GSW", "NO": "NOP", "NY": "NYK", "PHI": "PHL", "SA": "SAS"}
@@ -63,6 +80,19 @@ class Rankings:
 
 
 # ---- fetching ---------------------------------------------------------------
+def table_settings(multipliers: Dict[str, float]) -> Dict[str, str]:
+    """Dropdown values for the table: {"STL": 1.25} -> {"DDSTL": "1.25", ...}."""
+    out = dict(TABLE)
+    for cat, x in multipliers.items():
+        if cat not in MULTIPLIER_CONTROLS:
+            raise ValueError(f"no multiplier for {cat!r}; pick from {list(MULTIPLIER_CONTROLS)}")
+        if x not in MULTIPLIER_CHOICES:
+            raise ValueError(f"{cat} multiplier {x:g} isn't offered; pick from {[f'{c:g}' for c in MULTIPLIER_CHOICES]}")
+        value = f"{x:g}"
+        out[MULTIPLIER_CONTROLS[cat]] = value[1:] if value.startswith("0.") else value  # the page writes .25
+    return out
+
+
 def form_fields(root) -> Dict[str, str]:
     """The values a browser would post back for the page's form."""
     data: Dict[str, str] = {}
@@ -110,18 +140,21 @@ def _postback(session: requests.Session, root, timeout: float, **changes: str):
 
 def fetch_rankings(
     windows: Sequence[str] = DEFAULT_WINDOWS,
+    multipliers: Optional[Dict[str, float]] = None,
     session: Optional[requests.Session] = None,
     timeout: float = 30,
 ) -> Rankings:
     unknown = [w for w in windows if w not in WINDOWS]
     if unknown:
         raise ValueError(f"unknown window(s) {unknown}; pick from {list(WINDOWS)}")
+    table = table_settings(DEFAULT_MULTIPLIERS if multipliers is None else multipliers)
     s = session or requests.Session()
     root = _page(s.get(URL, headers=HEADERS, timeout=timeout))
     out = Rankings(updated=updated_on(root))
     for w in windows:
-        root = _postback(s, root, timeout, DDPOSFROM=ESPN_POSITIONS, DDDURATION=WINDOWS[w])
-        root = _postback(s, root, timeout, DDSHOW=SHOW_ALL)
+        # Sent with both postbacks, so the check after each confirms the table the rows came from.
+        root = _postback(s, root, timeout, **table, DDPOSFROM=ESPN_POSITIONS, DDDURATION=WINDOWS[w])
+        root = _postback(s, root, timeout, **table, DDSHOW=SHOW_ALL)
         out.windows[w] = parse_rankings(root)
     return out
 
@@ -259,6 +292,14 @@ def attach(players: Iterable[PlayerView], rankings: Rankings) -> int:
                 p.hashtag[w] = found[0]
         matched += bool(p.hashtag)
     return matched
+
+
+def rank_by_points(rankings: Rankings, scoring: Dict[str, float]) -> None:
+    """Ranks each window again by fpts per game under a league's points, since the page's
+    own rank weighs all nine categories equally."""
+    for lines in rankings.windows.values():
+        for i, line in enumerate(sorted(lines, key=lambda l: l.fpts(scoring), reverse=True), 1):
+            line.points_rank = i
 
 
 # ---- saving -----------------------------------------------------------------

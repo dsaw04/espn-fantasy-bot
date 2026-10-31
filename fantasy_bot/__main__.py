@@ -21,10 +21,12 @@ from .scoring import Scorer
 def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
     """Scraping is the flakiest step, so a failure here warns instead of killing the run."""
     try:
-        rankings = hashtag.fetch_rankings(cfg.hashtag_windows)
+        rankings = hashtag.fetch_rankings(cfg.hashtag_windows, cfg.hashtag_multipliers)
     except (requests.RequestException, hashtag.HashtagError) as e:
         print(f"warning: skipped Hashtag Basketball rankings: {e}", file=sys.stderr)
         return
+    if snap.scoring:
+        hashtag.rank_by_points(rankings, snap.scoring)
     matched = hashtag.attach(snap.all_players(), rankings)
     fa = sum(1 for p in snap.free_agents if p.hashtag)
     print(f"hashtag: matched {matched} players ({fa} of {len(snap.free_agents)} free agents)", file=sys.stderr)
