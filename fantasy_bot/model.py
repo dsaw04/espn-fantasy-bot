@@ -1,0 +1,102 @@
+"""Plain data types the recommendation logic works on.
+
+Everything ESPN specific lives in espn_adapter.py. Keeping these types plain
+means the scoring and recommendation code can be tested without network access.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from typing import Dict, List, Optional, Set
+
+BASE_POSITIONS = {"PG", "SG", "SF", "PF", "C"}
+OUT_STATUSES = {"OUT", "SUSPENSION", "INJURY_RESERVE"}
+RISKY_STATUSES = {"DAY_TO_DAY", "QUESTIONABLE", "DOUBTFUL", "GAME_TIME_DECISION"}
+BENCH_SLOTS = {"BE", "IR"}
+
+
+@dataclass
+class HashtagLine:
+    """One player's row in Hashtag Basketball's 9-cat rankings for one window."""
+
+    name: str
+    team: str  # ESPN abbreviation
+    positions: List[str]
+    rank: int
+    games: int
+    mpg: float
+    # per game averages: FG%, FGM, FGA, FT%, FTM, FTA, 3PM, PTS, REB, AST, STL, BLK, TO
+    stats: Dict[str, float] = field(default_factory=dict)
+    # z-score per category, the building blocks of total
+    zscores: Dict[str, float] = field(default_factory=dict)
+    total: float = 0.0  # Hashtag's overall per game value, sum of the z-scores
+    hashtag_id: Optional[int] = None
+
+
+@dataclass
+class PlayerView:
+    id: int
+    name: str
+    pro_team: str
+    pro_team_id: int
+    eligible_slots: List[str]
+    lineup_slot: str = ""
+    injury_status: str = "ACTIVE"
+    expected_return: Optional[date] = None
+    # fantasy points per game by split: "season", "last_7", "last_15", "projected"
+    fpts: Dict[str, float] = field(default_factory=dict)
+    # minutes per game by split
+    mpg: Dict[str, float] = field(default_factory=dict)
+    # scoring period id -> game datetime for this player's pro team
+    games: Dict[int, datetime] = field(default_factory=dict)
+    acquisition_type: str = ""
+    owner: str = "fa"  # "me", "other" or "fa"
+    percent_owned: float = 0.0
+    # Hashtag Basketball rankings by window: "season", "last_7", "last_14", "last_30"
+    hashtag: Dict[str, HashtagLine] = field(default_factory=dict)
+
+    @property
+    def positions(self) -> Set[str]:
+        return {s for s in self.eligible_slots if s in BASE_POSITIONS}
+
+    @property
+    def is_out(self) -> bool:
+        return (self.injury_status or "").upper() in OUT_STATUSES
+
+    @property
+    def is_risky(self) -> bool:
+        return (self.injury_status or "").upper() in RISKY_STATUSES
+
+    @property
+    def is_starting_slot(self) -> bool:
+        return bool(self.lineup_slot) and self.lineup_slot not in BENCH_SLOTS
+
+    def status_label(self) -> str:
+        s = (self.injury_status or "ACTIVE").upper()
+        if s == "ACTIVE":
+            return "healthy"
+        label = s.replace("_", "-").lower()
+        if self.expected_return:
+            label += f" (back ~{self.expected_return:%b %d})"
+        return label
+
+
+@dataclass
+class Snapshot:
+    """Everything the bot needs for one daily run."""
+
+    today: int  # current scoring period id
+    horizon: List[int]  # scoring periods to evaluate, today first
+    my_team_name: str
+    my_roster: List[PlayerView]
+    other_rostered: List[PlayerView]
+    free_agents: List[PlayerView]
+    period_dates: Dict[int, date] = field(default_factory=dict)
+
+    def all_players(self) -> List[PlayerView]:
+        return self.my_roster + self.other_rostered + self.free_agents
+
+
+def n_games(n: int) -> str:
+    return f"{n} game" if n == 1 else f"{n} games"
