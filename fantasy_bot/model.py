@@ -57,6 +57,7 @@ class PlayerView:
     lineup_slot: str = ""
     injury_status: str = "ACTIVE"
     expected_return: Optional[date] = None
+    injury_note: str = ""  # latest line from ESPN's injury report
     # fantasy points per game by split: "season", "last_7", "last_15", "projected"
     fpts: Dict[str, float] = field(default_factory=dict)
     # minutes per game by split

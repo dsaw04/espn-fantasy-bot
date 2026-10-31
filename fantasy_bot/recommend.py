@@ -12,7 +12,7 @@ from .lineup import TodayPlan, Week, todays_lineup
 from .matchup import Judge, Verdict
 from .model import MatchupState, PlayerView, Snapshot, n_games
 from .opportunity import Opportunity, fresh_injuries, opportunities
-from .scoring import Scorer, Valuation, availability_on
+from .scoring import Role, Scorer, Valuation, availability_on, value_on
 
 
 @dataclass
@@ -153,12 +153,22 @@ def _role_value(fa: PlayerView, opps: List[Opportunity], cfg: Config, scorer: Sc
     return scorer.base(fa), None
 
 
-def _expected(p: PlayerView, per_game: float, days: List[int], snap: Snapshot, cfg: Config) -> float:
+def _expected(p: PlayerView, per_game, days: List[int], snap: Snapshot, cfg: Config) -> float:
     """Expected fpts over these days. Uses only observed value: the depth chart estimate
     is a guess, so it feeds the watch list, not moves."""
-    return sum(
-        availability_on(p, snap.period_dates.get(sp), cfg) * per_game for sp in days if sp in p.games
-    )
+    total = 0.0
+    for sp in days:
+        if sp in p.games:
+            day = snap.period_dates.get(sp)
+            total += availability_on(p, day, cfg) * value_on(per_game, day)
+    return total
+
+
+def _role(p: PlayerView, per_game: float, opp: Optional[Opportunity], scorer: Scorer):
+    """His role value lasts only until the injured teammate is due back."""
+    if opp is None or opp.injured.expected_return is None:
+        return per_game
+    return Role(per_game, scorer.base(p), opp.injured)
 
 
 def _consistent(opp: Optional[Opportunity], drop: PlayerView, drop_per_game: float) -> bool:
@@ -181,18 +191,22 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
         opps_by_player.setdefault(o.player.id, []).append(o)
 
     # Your players get the same role based value a free agent would.
-    value = {p.id: _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)[0] for p in snap.roster_for_moves()}
+    value: Dict[int, float] = {}
+    roles: Dict[int, object] = {}
+    for p in snap.roster_for_moves():
+        v, opp = _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)
+        value[p.id], roles[p.id] = v, _role(p, v, opp, scorer)
     judge = Judge(snap, cfg, lambda p: value[p.id] if p.id in value else scorer.base(p))
     days = judge.days
     roster = [scorer.value(p, days) for p in droppable(snap, cfg)]
     roster.sort(key=lambda v: value[v.player.id])
     streamers = {v.player.id for v in roster[: cfg.streaming_spots]}
     # Everyone you'd field, untouchables included.
-    lineup = [(p, value[p.id]) for p in snap.roster_for_moves()]
+    lineup = [(p, roles[p.id]) for p in snap.roster_for_moves()]
     verdict = before = judge(lineup)
     bar = judge.bar()
 
-    def swap(add: PlayerView, per_game: float, drop: Valuation):
+    def swap(add: PlayerView, per_game, drop: Valuation):
         trial = [x for x in lineup if x[0].id != drop.player.id] + [(add, per_game)]
         return trial, judge(trial)
 
@@ -204,14 +218,15 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
         if not v.games:
             continue  # no game before the horizon ends
         per_game, opp = _role_value(p, opps_by_player.get(p.id, []), cfg, scorer)
-        candidates.append((_expected(p, per_game, days, snap, cfg), per_game, opp, v))
+        role = _role(p, per_game, opp, scorer)
+        candidates.append((_expected(p, role, days, snap, cfg), per_game, opp, v, role))
     candidates.sort(key=lambda c: c[0], reverse=True)
 
     moves: List[Move] = []
     remaining = list(roster)
     taken: Set[int] = set()
     bet_on: Set[int] = set()  # injured players a recommended add is already leaning on
-    for expected, per_game, opp, add in candidates:
+    for expected, per_game, opp, add, role in candidates:
         if len(moves) >= judge.moves_allowed() or not remaining:
             break
         if opp and opp.injured.id in bet_on:
@@ -225,7 +240,7 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
             for drop in remaining:
                 if drop.player.id not in streamers:
                     continue
-                trial, after = swap(add.player, per_game, drop)
+                trial, after = swap(add.player, role, drop)
                 score = judge.gain(after, verdict)
                 if score >= bar and (best is None or score > best_score):
                     dv = value[drop.player.id]
@@ -238,7 +253,7 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
                 dv = value[drop.player.id]
                 edge = per_game - dv
                 if drop.player.id not in streamers and edge >= cfg.min_edge and _consistent(opp, drop.player, dv):
-                    trial, after = swap(add.player, per_game, drop)
+                    trial, after = swap(add.player, role, drop)
                     best = Move(add, drop, "core", per_game, dv, after.week.total - verdict.week.total, edge, opp)
                     best_score, best_trial = judge.gain(after, verdict), (trial, after)
                     break

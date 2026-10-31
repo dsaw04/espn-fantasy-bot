@@ -65,6 +65,24 @@ def availability_on(p: PlayerView, day: Optional[date], cfg: Config) -> float:
     return 1.0
 
 
+@dataclass(frozen=True)
+class Role:
+    """A per game value that only holds while an injured teammate sits, like a backup's
+    bigger role. Once the teammate is due back, he's worth his usual value again."""
+
+    value: float  # while the teammate is out
+    after: float  # once he's back
+    injured: PlayerView
+
+    def on(self, day: Optional[date]) -> float:
+        return self.value if is_out_on(self.injured, day) else self.after
+
+
+def value_on(per_game, day: Optional[date]) -> float:
+    """A plain per game number, or a Role's value on that day."""
+    return per_game.on(day) if isinstance(per_game, Role) else per_game
+
+
 @dataclass
 class DepthOpening:
     """An injured player whose minutes are up for grabs."""

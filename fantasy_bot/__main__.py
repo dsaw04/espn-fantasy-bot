@@ -7,7 +7,7 @@ import sys
 
 import requests
 
-from . import hashtag
+from . import hashtag, injuries
 from .config import Config, load_config
 from .history import Alerts, alert_key, log_run, review_last_matchup, reviews
 from .lineup import todays_lineup
@@ -30,6 +30,17 @@ def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
     print(f"hashtag: matched {matched} players ({fa} of {len(snap.free_agents)} free agents)", file=sys.stderr)
     if cfg.hashtag_save_dir:
         hashtag.write_csv(rankings, cfg.hashtag_save_dir)
+
+
+def add_injury_news(snap: Snapshot) -> None:
+    """Return dates ESPN fantasy is missing. Like the scrape, optional."""
+    try:
+        news = injuries.fetch()
+    except (requests.RequestException, ValueError) as e:
+        print(f"warning: skipped ESPN injury report: {e}", file=sys.stderr)
+        return
+    matched = injuries.attach(snap.all_players(), news, snap.period_dates.get(snap.today))
+    print(f"injuries: {len(news)} on ESPN's report, {matched} matched", file=sys.stderr)
 
 
 def main() -> None:
@@ -59,6 +70,7 @@ def main() -> None:
         return
 
     snap = source.snapshot()
+    add_injury_news(snap)
     source.attach_game_logs(needs_game_logs(snap, cfg))
     if cfg.hashtag_enabled:
         add_hashtag_rankings(snap, cfg)

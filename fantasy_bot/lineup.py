@@ -19,7 +19,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .config import Config
 from .model import PlayerView, Snapshot
-from .scoring import availability_on
+from .scoring import availability_on, value_on
 
 NOT_STARTING = {"BE", "IR"}
 
@@ -99,7 +99,7 @@ def project(
         for p, per_game in roster:
             if sp not in p.games or (now is not None and p.games[sp] <= now):
                 continue
-            value = availability_on(p, day, cfg) * per_game
+            value = availability_on(p, day, cfg) * value_on(per_game, day)
             if value > 0:
                 playing.append((p, value))
                 week.games[p.id] = week.games.get(p.id, 0) + 1

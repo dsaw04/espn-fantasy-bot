@@ -122,7 +122,8 @@ def render(r: Report) -> str:
     lines.append("**Injury report (your roster)**")
     if r.injured_on_roster:
         for p in r.injured_on_roster:
-            lines.append(f"- {p.name} ({p.pro_team} {_pos(p)}): {p.status_label()}")
+            note = f". {p.injury_note}" if p.injury_note else ""
+            lines.append(f"- {p.name} ({p.pro_team} {_pos(p)}): {p.status_label()}{note}")
     else:
         lines.append("- Everyone is healthy.")
     lines.append("")

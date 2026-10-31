@@ -685,3 +685,50 @@ def test_report_shows_last_weeks_review():
     assert "You made 3 of 4 suggested pickups. Those adds out-scored their drops by +38 fpts" in text
     assert "off by 4.1 fpts/g on average (actual 1.2 below the estimate; 14% miss vs projection_error 15%)" in text
     assert "Season: 0-1." in text
+
+
+# ---- injury report -------------------------------------------------------------
+def test_parses_espns_injury_feed():
+    import json
+    from pathlib import Path
+    from fantasy_bot.injuries import parse
+    data = json.loads((Path(__file__).parent / "fixtures" / "espn_injuries.json").read_text(encoding="utf-8"))
+    news = parse(data)
+    gueye = next(i for i in news if i.name == "Mouhamed Gueye")
+    assert gueye.athlete_id == 4712863 and gueye.return_date == date(2026, 11, 20) and gueye.status == "Out"
+    alvarado = next(i for i in news if i.athlete_id is None)
+    assert alvarado.return_date is None and alvarado.status == "Day-To-Day"  # bad date is ignored
+
+
+def test_injury_feed_fills_missing_return_dates():
+    from fantasy_bot.injuries import Injury, attach
+    today = DATES[TODAY]
+    by_id = pv(80, "Hurt One", "LAL", 13, G, 30, 30, [10], injury_status="OUT")
+    by_name = pv(81, "José Alvarado", "NOP", 3, G, 20, 25, [10], injury_status="DAY_TO_DAY")
+    has_date = pv(82, "Dated", "LAL", 13, G, 30, 30, [10], injury_status="OUT", expected_return=date(2026, 12, 1))
+    stale = pv(83, "Stale", "LAL", 13, G, 30, 30, [10], injury_status="OUT")
+    healthy = pv(84, "Healthy", "LAL", 13, G, 30, 30, [10])
+    news = [
+        Injury(80, "Hurt One", "Out", date(2026, 11, 8), "Ankle sprain, out two weeks."),
+        Injury(None, "Jose Alvarado", "Day-To-Day", date(2026, 10, 30), "Probable."),
+        Injury(82, "Dated", "Out", date(2026, 11, 2), ""),
+        Injury(83, "Stale", "Out", today - timedelta(days=2), ""),
+        Injury(84, "Healthy", "Out", date(2026, 11, 8), "Old news."),
+    ]
+    assert attach([by_id, by_name, has_date, stale, healthy], news, today) == 4
+    assert by_id.expected_return == date(2026, 11, 8) and by_id.injury_note.startswith("Ankle")
+    assert by_name.expected_return == date(2026, 10, 30) and by_name.injury_note == "Probable."
+    assert has_date.expected_return == date(2026, 12, 1)  # ESPN fantasy's own date wins
+    assert stale.expected_return is None  # still out past it, so it's stale
+    assert healthy.injury_note == ""
+
+
+def test_a_backups_role_ends_when_the_starter_is_due_back():
+    snap = scenario()
+    starter = next(p for p in snap.other_rostered if p.name == "Lakers Starting C")
+    starter.expected_return = DATES[12]  # back for the last two days of the horizon
+    r = build_report(snap, cfg(max_moves=5))
+    m = next(m for m in r.moves if m.add.player.name == "Lakers Backup C")
+    # 32 a game while the starter sits (10, 11), then his usual 15 (12, 13), less Old Stream's 16.
+    # Without a return date it was 4 x 32 - 16 = 112.
+    assert m.gain == pytest.approx(32 + 32 + 15 + 15 - 16)

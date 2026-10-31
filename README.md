@@ -18,7 +18,7 @@ expected value = sum over games in the next N days of
 ```
 
 - **Per game value** blends last 7 days, last 15 days, season average and ESPN's projection. Weights live in `bot.toml`. The projection counts as much as 5 real games, so its weight fades as a player's games pile up and a preseason guess can't hold down a breakout.
-- **Availability** is 0 while a player is out (until his expected return date), discounted when day-to-day, else 1.
+- **Availability** is 0 while a player is out (until his expected return date), discounted when day-to-day, else 1. Return dates come from ESPN fantasy when it has one, otherwise from ESPN's free [injury report](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries), which also supplies the note shown next to each injured player. If that feed is down the run carries on without it.
 - **Depth bump** is `injured player's fpts x absorb_rate x position overlap x depth share`, applied only on days the injured player misses. It's an estimate, used for the next few days' value and for injuries too fresh to have game logs. Players out all season are skipped, since their backups' stats already reflect the bigger role.
 - Points leagues use ESPN's own fantasy point averages. Category leagues fall back to standard ESPN points as a ranking proxy.
 - Two pickups are never stacked on the same injury, since both lose value when that starter returns.
@@ -41,7 +41,7 @@ Anyone on your roster can be suggested as a drop, except the names in `untouchab
 
 Each free agent gets a per game value for the role he has right now:
 
-- **Backup to an injured starter**, with at least `min_games_without` games played while that starter sat: his actual average in those games.
+- **Backup to an injured starter**, with at least `min_games_without` games played while that starter sat: his actual average in those games, but only until the starter is due back. After that he counts at his usual value, so a role that ends in two days isn't valued as if it lasts all week.
 - **Anyone else:** his blended per game value.
 
 Your own players get the same role based value, so a pickup isn't valued one way before you add him and another way after.
@@ -147,5 +147,5 @@ Tests run on simulated league data, including a fake espn-api League, so they ne
 - ESPN's injury designations lag official NBA reports by a bit, so check late scratches before lock.
 - Game logs show who has stepped up, but the first game or two after an injury is a small sample. The bot doesn't read beat reporter news about who is actually starting.
 - The bot assumes an add counts against the matchup you make it in. If ESPN counts it against the matchup it takes effect in, a Sunday add is really one of next week's.
-- ESPN usually has no return date for injured players, so the bot can't tell a 3-day absence from a 3-week one.
+- Return dates are estimates. A player still out past his date is treated as having no date at all, not as healthy.
 - espn-api is unofficial and ESPN occasionally changes its endpoints. If a run breaks, update with `pip install -U espn-api`.
