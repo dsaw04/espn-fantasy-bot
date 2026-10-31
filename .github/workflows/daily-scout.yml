@@ -1,0 +1,25 @@
+name: Daily fantasy scout
+
+on:
+  schedule:
+    # 18:30 UTC = 7:30am in Auckland (NZDT) and early afternoon US Eastern,
+    # after the morning NBA injury reports and before tip-off.
+    - cron: "30 18 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run scout
+        env:
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          ESPN_SWID: ${{ secrets.ESPN_SWID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        # league id, team and chopping block come from the committed bot.toml
+        run: python -m fantasy_bot
