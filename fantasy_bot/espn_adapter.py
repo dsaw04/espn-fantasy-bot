@@ -181,7 +181,7 @@ class EspnSource:
             return None
         team = next((t for t in data.get("teams", []) if t.get("id") == me), {})
         used = team.get("transactionCounter", {}).get("matchupAcquisitionTotals", {}).get(str(mp), 0)
-        nxt = game(mp + 1)
+        nxt, prev = game(mp + 1), game(mp - 1)
         return MatchupState(
             period=mp,
             days=cal[mp],
@@ -191,6 +191,7 @@ class EspnSource:
             next_opp=Side(names.get(nxt[1], "next opponent"), 0.0, rosters.get(nxt[1], [])) if nxt else None,
             adds_limit=adds_limit(settings.get("acquisitionSettings", {}), len(cal[mp])),
             adds_used=int(used),
+            last=(names.get(prev[1], "your opponent"), prev[0], prev[2]) if prev else None,
         )
 
     def _stat_filter(self) -> List[str]:
@@ -287,19 +288,23 @@ class EspnSource:
             log[int(s["scoringPeriodId"])] = GameLog(fpts, mins)
         return log
 
+    def game_logs(self, ids: List[int]) -> Dict[int, Dict[int, GameLog]]:
+        """This season's games for these players, in one request."""
+        if not ids:
+            return {}
+        card = self.league.espn_request.get_player_card(sorted(set(ids)), self.league.finalScoringPeriod)
+        return {
+            raw.get("id", raw.get("player", {}).get("id")): self._game_log(raw)
+            for raw in card.get("players", [])
+        }
+
     def attach_game_logs(self, players: List[PlayerView]) -> None:
         """Fills in game_log for these players in one request. Players that already
         have one, like your roster from its player card, are left alone."""
         players = [p for p in players if p.game_log is None]
         if not players:
             return
-        card = self.league.espn_request.get_player_card(
-            sorted({p.id for p in players}), self.league.finalScoringPeriod
-        )
-        logs = {
-            raw.get("id", raw.get("player", {}).get("id")): self._game_log(raw)
-            for raw in card.get("players", [])
-        }
+        logs = self.game_logs([p.id for p in players])
         for p in players:
             if p.id in logs:
                 p.game_log = logs[p.id]

@@ -646,3 +646,42 @@ def test_lineup_check_posts_each_change_once_a_day(tmp_path, monkeypatch):
     snap.my_roster[2].injury_status = "OUT"  # a late scratch is new advice, so it goes out
     main.lineup_check(source, c, str(tmp_path), True)
     assert len(posted) == 2 and "Late Pick A: SG to bench (out)" in posted[1]
+
+
+# ---- history -----------------------------------------------------------------
+def test_logs_runs_and_reviews_the_matchup_once_it_ends(tmp_path):
+    from fantasy_bot.history import brier, log_run, review_last_matchup, reviews
+    snap = with_matchup(scenario())
+    report = build_report(snap, cfg())
+    move = report.moves[0]
+    add, drop = move.add.player, move.drop.player
+    log_run(str(tmp_path), snap, report)
+
+    # A week later: a new matchup, and you made the move.
+    later = with_matchup(scenario())
+    later.matchup.period = 3
+    later.matchup.last = ("Rival", 1100.0, 1000.0)
+    later.today = 14
+    later.next_roster = [p for p in later.my_roster if p.id != drop.id] + [add]
+    star = next(p for p in later.my_roster if p.name == "Star Guard")
+    logs = {add.id: log(g11=(30, 30), g12=(34, 30)), drop.id: log(g11=(10, 20)), star.id: log(g11=(50, 34), g12=(40, 34))}
+    v = review_last_matchup(str(tmp_path), later, lambda ids: {i: logs.get(i, {}) for i in ids})
+    assert v.won and v.predicted == pytest.approx(report.outlook.now.win, abs=1e-4)
+    assert (v.suggested, v.made) == (len(report.moves), 1)
+    assert v.made_gain == pytest.approx(64 - 10)
+    # Star Guard hit his 45 estimate; the drop scored 10 against his 14.
+    assert v.players == 2 and v.bias == pytest.approx(((45 - 45) + (10 - 14)) / 2)
+    assert review_last_matchup(str(tmp_path), later, lambda ids: {}) is None  # only once
+    assert [r.period for r in reviews(str(tmp_path))] == [2] and brier(reviews(str(tmp_path))) is not None
+
+
+def test_report_shows_last_weeks_review():
+    from fantasy_bot.history import Review
+    r = build_report(with_matchup(scenario()), cfg())
+    r.review = Review(2, "Fungus", 1180, 1240, 0.41, 4, 3, 38.0, 4.1, -1.2, 0.14, 10)
+    r.season = [r.review]
+    text = render(r)
+    assert "**Last week vs Fungus**: lost 1180 to 1240. The first report that week gave you 41%." in text
+    assert "You made 3 of 4 suggested pickups. Those adds out-scored their drops by +38 fpts" in text
+    assert "off by 4.1 fpts/g on average (actual 1.2 below the estimate; 14% miss vs projection_error 15%)" in text
+    assert "Season: 0-1." in text

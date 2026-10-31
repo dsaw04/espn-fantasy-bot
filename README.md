@@ -101,6 +101,23 @@ To try the lineup check locally: `python -m fantasy_bot --lineup-only --no-post`
 
 To get a Discord post: Server Settings > Integrations > Webhooks > New Webhook, then copy the URL.
 
+## Track record
+
+Each daily report is logged to `runs.jsonl` on the `bot-data` branch: the matchup, both win chances, every suggested move and your roster's per game estimates. The first report of each matchup checks the one before it and adds a **Last week** section:
+
+- the result, next to the win chance the first report that week gave you;
+- how many suggested pickups you made, and how many fpts those adds scored over their drops in the week after;
+- how far off the per game estimates for your players were, and in which direction.
+
+For the whole season so far, with hints for `projection_error` and the weights once there are a few weeks of data:
+
+```bash
+git fetch origin bot-data && git worktree add data origin/bot-data
+python -m fantasy_bot.review --data-dir data
+```
+
+Local runs only log when given `--data-dir`.
+
 ## Tuning
 
 | Setting | What it does |

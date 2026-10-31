@@ -64,6 +64,9 @@ class Report:
     win_bar: float = 0.0  # win chance a streaming move had to add today
     # (day, starting slots your best lineup leaves empty) over the coming days, before any move
     open_spots: List[Tuple[date, int]] = field(default_factory=list)
+    review: Optional[object] = None  # history.Review of last matchup, on the first report of a new one
+    season: List[object] = field(default_factory=list)  # every history.Review so far
+    projection_error: float = 0.0
     per_game: Dict[int, float] = field(default_factory=dict)  # your players' per game value in their current role
     min_edge: float = 0.0
     lineup_min_gain: float = 0.0
@@ -287,6 +290,7 @@ def build_report(snap: Snapshot, cfg: Config) -> Report:
         injured_on_roster=[p for p in snap.roster_for_moves() if p.is_out or p.is_risky],
         lineup=todays_lineup(snap, cfg, lambda p: value[p.id] if p.id in value else scorer.base(p)),
         lineup_min_gain=cfg.lineup_min_gain,
+        projection_error=cfg.projection_error,
         moves=moves,
         roster=roster,
         watchlist=watch,

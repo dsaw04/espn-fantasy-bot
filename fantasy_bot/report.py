@@ -7,6 +7,7 @@ from typing import List
 import requests
 
 from .model import n_games
+from .history import brier
 from .lineup import TodayPlan
 from .recommend import Report
 
@@ -38,6 +39,34 @@ def _matchup_lines(r: Report) -> List[str]:
         )
     if o.now.decided and o.next is not None:
         lines.append("This week is all but decided, so pickups are judged on next week.")
+    return lines + [""]
+
+
+def _review_lines(r: Report) -> List[str]:
+    v = r.review
+    result = "won" if v.won else "lost"
+    head = f"**Last week vs {v.opp}**: {result} {v.me:.0f} to {v.them:.0f}."
+    if v.predicted is not None:
+        head += f" The first report that week gave you {_pct(v.predicted)}."
+    lines = [head]
+    if v.suggested:
+        line = f"- You made {v.made} of {v.suggested} suggested pickups."
+        if v.made_gain is not None:
+            line += f" Those adds out-scored their drops by {v.made_gain:+.0f} fpts in the week after."
+        lines.append(line)
+    if v.error is not None:
+        side = "below" if v.bias < 0 else "above"
+        lines.append(
+            f"- Per game estimates for your players were off by {v.error:.1f} fpts/g on average "
+            f"(actual {abs(v.bias):.1f} {side} the estimate; {_pct(v.rel_error)} miss vs projection_error {_pct(r.projection_error)})."
+        )
+    if r.season:
+        wins = sum(x.won for x in r.season)
+        b = brier(r.season)
+        line = f"- Season: {wins}-{len(r.season) - wins}."
+        if b is not None:
+            line += f" Forecast Brier score {b:.2f} (0 is perfect, 0.25 is a coin flip)."
+        lines.append(line)
     return lines + [""]
 
 
@@ -84,6 +113,8 @@ def render(r: Report) -> str:
     lines: List[str] = [f"**{r.team_name}: daily scout** (scoring period {r.today}, looking {ahead})", ""]
     if r.matchup and r.outlook:
         lines += _matchup_lines(r)
+    if r.review is not None:
+        lines += _review_lines(r)
     if r.open_spots:
         days = ", ".join(f"{d:%a %b} {d.day}: {n}" for d, n in r.open_spots)
         lines += [f"**Empty lineup spots** (streamers score most here): {days}", ""]

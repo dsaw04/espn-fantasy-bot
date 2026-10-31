@@ -9,7 +9,7 @@ import requests
 
 from . import hashtag
 from .config import Config, load_config
-from .history import Alerts, alert_key
+from .history import Alerts, alert_key, log_run, review_last_matchup, reviews
 from .lineup import todays_lineup
 from .model import Snapshot
 from .opportunity import needs_game_logs
@@ -63,11 +63,16 @@ def main() -> None:
     if cfg.hashtag_enabled:
         add_hashtag_rankings(snap, cfg)
 
+    review = review_last_matchup(args.data_dir, snap, source.game_logs)
     report = build_report(snap, cfg)
+    if args.data_dir:
+        report.review, report.season = review, reviews(args.data_dir)
     text = render(report)
     print(text)
     if post:
         post_to_discord(cfg.discord_webhook, text)
+    if args.data_dir:
+        log_run(args.data_dir, snap, report)
     if post or args.data_dir:
         # The hourly lineup check shouldn't repeat what this report just said.
         alerts = Alerts(args.data_dir, snap.period_dates.get(snap.today) or snap.now.date())

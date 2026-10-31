@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 BASE_POSITIONS = {"PG", "SG", "SF", "PF", "C"}
 OUT_STATUSES = {"OUT", "SUSPENSION", "INJURY_RESERVE"}
@@ -123,6 +123,8 @@ class MatchupState:
     next_opp: Optional[Side] = None  # None on a bye or when the schedule isn't set yet
     adds_limit: int = -1  # acquisitions allowed this matchup, -1 for no limit
     adds_used: int = 0
+    # Last matchup's final: (opponent's name, your score, theirs). None in week 1 or after a bye.
+    last: Optional[Tuple[str, float, float]] = None
 
     @property
     def adds_left(self) -> Optional[int]:
