@@ -1,0 +1,32 @@
+# Bot settings. Safe to commit: cookies and webhooks go in secrets.toml (gitignored)
+# or env vars ESPN_S2, ESPN_SWID, DISCORD_WEBHOOK_URL. Env vars override this file.
+
+[league]
+league_id = 123456789      # from the league URL: ...?leagueId=123456789
+year = 2027                # ESPN names NBA seasons by the year they END in (2026-27 = 2027)
+team_id = 1                # run `python -m fantasy_bot --list-teams` to find yours
+
+[bot]
+# Your late round picks. Names must match ESPN spelling.
+chopping_block = ["Late Pick One", "Late Pick Two", "Late Pick Three"]
+# Anyone you've picked up from waivers or free agency is automatically droppable,
+# so streamers rotate out without you editing this file every day.
+auto_chop_pickups = true
+# Pickups that turned out good and should stay off the block.
+untouchable = []
+
+horizon_days = 4           # how many days ahead to count games
+max_moves = 2              # most add/drop suggestions per day
+min_gain = 5.0             # only suggest a move if it gains at least this many fpts over the horizon
+free_agent_pool = 300      # how many free agents to scan, by ownership
+min_minutes_for_depth = 18 # an injured player must average this to open up a role
+absorb_rate = 0.5          # share of an injured player's production backups pick up
+dtd_availability = 0.6     # how much to discount day-to-day players
+
+[weights]
+# How much each split counts toward per game value. Lean on projections early
+# in the season, then shift weight to last_7 and last_15 as samples grow.
+last_7 = 0.35
+last_15 = 0.20
+season = 0.20
+projected = 0.25
