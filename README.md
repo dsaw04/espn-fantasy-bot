@@ -121,6 +121,36 @@ To try the lineup check locally: `python -m fantasy_bot --lineup-only --no-post`
 
 To get a Discord post: Server Settings > Integrations > Webhooks > New Webhook, then copy the URL.
 
+## Phone app (Streamlit)
+
+`streamlit_app.py` shows the same reports as a web app built for phones: **Today** (the matchup, today's lineup, injuries and your roster's per game values), **Pickups**, **Trades** (loaded when you tap *Find trades*, since that reads every roster) and **Settings**, where you can try other untouchables, move limits and trade bars without editing `bot.toml`. Those changes last until the page reloads.
+
+Each read from ESPN is reused for 15 minutes. *Refresh* reads it again. Run history isn't shown, since it lives on the `bot-data` branch.
+
+To try it locally (it reads `bot.toml` and `secrets.toml` like the bot):
+
+```bash
+streamlit run streamlit_app.py
+```
+
+To deploy it on [Streamlit Community Cloud](https://share.streamlit.io) for free:
+
+1. Push the repo to GitHub, then on share.streamlit.io choose **Create app**, pick the repo, branch `main` and main file `streamlit_app.py`.
+2. Under **Advanced settings**, choose Python 3.12, and paste the contents of your `secrets.toml` into **Secrets**. Add a password too, since anyone with the link would otherwise see your league:
+
+   ```toml
+   password = "pick-something"
+
+   [league]
+   espn_s2 = "..."
+   swid = "{...}"
+   ```
+
+   The same `[league]` table can also override `league_id`, `year` and `team_id` from `bot.toml`.
+3. Deploy. On your phone, open the link and use **Add to Home Screen** so it opens like an app.
+
+When the ESPN cookies expire, the app says so: paste the new ones under the app's **Settings > Secrets**. When nobody has opened it for a while the app goes to sleep, and the next visit takes a minute to wake it up.
+
 ## Track record
 
 Each daily report is logged to `runs.jsonl` on the `bot-data` branch: the matchup, both win chances, every suggested move and your roster's per game estimates. The first report of each matchup checks the one before it and adds a **Last week** section:

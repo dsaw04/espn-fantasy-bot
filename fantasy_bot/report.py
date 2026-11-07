@@ -81,17 +81,21 @@ def _win_change(m) -> str:
     return ", ".join(parts) or "no change to your win chances"
 
 
+def move_value(m, r: Report) -> str:
+    """What a move is worth: win chances with a matchup, fpts without one, per game for a core upgrade."""
+    if m.kind == "stream" and m.win_gain is not None:
+        return f"~{_win_change(m)}"
+    if m.kind == "stream":
+        return f"~{m.gain:+.0f} fpts over the next {r.horizon_days} days"
+    return f"~{m.edge:+.1f} fpts/g ({m.per_game:.1f} vs {m.drop_per_game:.1f})"
+
+
 def _move_lines(moves, r: Report, start: int = 1) -> List[str]:
     lines = []
     for i, m in enumerate(moves, start):
         a = m.add.player
         head = f"{i}. Add **{a.name}** ({a.pro_team} {_pos(a)}, {a.percent_owned:.0f}% owned), drop **{m.drop.player.name}**"
-        if m.kind == "stream" and m.win_gain is not None:
-            head += f" (streaming spot). ~{_win_change(m)}"
-        elif m.kind == "stream":
-            head += f" (streaming spot). ~{m.gain:+.0f} fpts over the next {r.horizon_days} days"
-        else:
-            head += f". ~{m.edge:+.1f} fpts/g ({m.per_game:.1f} vs {m.drop_per_game:.1f})"
+        head += f" (streaming spot). {move_value(m, r)}" if m.kind == "stream" else f". {move_value(m, r)}"
         lines.append(head)
         for reason in m.reasons:
             lines.append(f"   - {reason}")

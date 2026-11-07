@@ -46,6 +46,25 @@ def add_injury_news(snap: Snapshot) -> None:
     print(f"injuries: {len(news)} on ESPN's report, {matched} matched", file=sys.stderr)
 
 
+def scout_snapshot(source, cfg: Config) -> Snapshot:
+    """Everything the daily report needs: the league, injury news, game logs and Hashtag's lines."""
+    snap = source.snapshot()
+    add_injury_news(snap)
+    source.attach_game_logs(needs_game_logs(snap, cfg))
+    if cfg.hashtag_enabled:
+        add_hashtag_rankings(snap, cfg)
+    return snap
+
+
+def trade_snapshot(source, cfg: Config) -> Snapshot:
+    snap = source.snapshot()
+    source.attach_cards(snap.other_rostered)  # their recent form, not just season totals
+    add_injury_news(snap)
+    if cfg.hashtag_enabled:
+        add_hashtag_rankings(snap, cfg)
+    return snap
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Daily ESPN fantasy basketball scout")
     ap.add_argument("--config", default="bot.toml")
@@ -78,12 +97,7 @@ def main() -> None:
         trade_scout(source, cfg, post)
         return
 
-    snap = source.snapshot()
-    add_injury_news(snap)
-    source.attach_game_logs(needs_game_logs(snap, cfg))
-    if cfg.hashtag_enabled:
-        add_hashtag_rankings(snap, cfg)
-
+    snap = scout_snapshot(source, cfg)
     review = review_last_matchup(args.data_dir, snap, source.game_logs)
     report = build_report(snap, cfg)
     if args.data_dir:
@@ -103,12 +117,7 @@ def main() -> None:
 
 def trade_scout(source, cfg: Config, post: bool) -> None:
     """Sell players running hot to the other teams for players off to a slow start."""
-    snap = source.snapshot()
-    source.attach_cards(snap.other_rostered)  # their recent form, not just season totals
-    add_injury_news(snap)
-    if cfg.hashtag_enabled:
-        add_hashtag_rankings(snap, cfg)
-    text = render_trades(build_trades(snap, cfg))
+    text = render_trades(build_trades(trade_snapshot(source, cfg), cfg))
     print(text)
     if post:
         post_to_discord(cfg.discord_webhook, text)

@@ -1,0 +1,5 @@
+[client]
+toolbarMode = "minimal"  # no developer menu on the phone
+
+[theme]
+primaryColor = "#E8590C"
