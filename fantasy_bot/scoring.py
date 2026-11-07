@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
-from .config import Config
+from .config import Config, Weights
 from .model import PlayerView, Snapshot
 
 
@@ -37,28 +37,38 @@ def hashtag_behind(p: PlayerView) -> int:
     return max(0, p.games_played - season.games) if season else 0
 
 
-def hashtag_fpts(p: PlayerView, scoring: Dict[str, float]) -> Optional[float]:
-    """Hashtag's per game stats scored with the league's points. None in category leagues,
-    where its 9-cat value doesn't translate into points, when he has no line, or when it's
-    missing games ESPN already has (a big night would count against him)."""
+def hashtag_fpts(p: PlayerView, scoring: Dict[str, float], windows: Sequence[str] = HASHTAG_BLEND) -> Optional[float]:
+    """Hashtag's per game stats scored with the league's points, from the first of these
+    windows he has. None in category leagues, where its 9-cat value doesn't translate into
+    points, when he has no line, or when it's missing games ESPN already has (a big night
+    would count against him)."""
     if not scoring or hashtag_behind(p):
         return None
-    for window in HASHTAG_BLEND:
+    for window in windows:
         line = p.hashtag.get(window)
         if line and line.games:
             return line.fpts(scoring)
     return None
 
 
-def per_game_value(p: PlayerView, cfg: Config, scoring: Optional[Dict[str, float]] = None) -> float:
-    w = cfg.weights
+def per_game_value(
+    p: PlayerView,
+    cfg: Config,
+    scoring: Optional[Dict[str, float]] = None,
+    weights: Optional[Weights] = None,
+    projection_games: int = PROJECTION_GAMES,
+    hashtag_windows: Sequence[str] = HASHTAG_BLEND,
+) -> float:
+    """The daily scout's blend by default. The trade scout passes its own, leaning on the
+    season and the projection to value a player over the rest of the season."""
+    w = weights or cfg.weights
     played = len(p.game_log) if p.game_log is not None else p.games_played
     parts = [
         (p.fpts.get("last_7"), w.last_7),
         (p.fpts.get("last_15"), w.last_15),
         (p.fpts.get("season"), w.season),
-        (p.fpts.get("projected"), w.projected * PROJECTION_GAMES / (PROJECTION_GAMES + played)),
-        (hashtag_fpts(p, scoring or {}), w.hashtag),
+        (p.fpts.get("projected"), w.projected * projection_games / (projection_games + played)),
+        (hashtag_fpts(p, scoring or {}, hashtag_windows), w.hashtag),
     ]
     used = [(v, wt) for v, wt in parts if v is not None and wt > 0]
     if not used:

@@ -1,0 +1,28 @@
+name: Trade scout
+
+on:
+  schedule:
+    # Mondays at 18:45 UTC, just after the daily scout, as a new matchup starts.
+    - cron: "45 18 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  trades:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run trade scout
+        env:
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          ESPN_SWID: ${{ secrets.ESPN_SWID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        # league id, team and untouchables come from the committed bot.toml
+        run: python -m fantasy_bot --trades

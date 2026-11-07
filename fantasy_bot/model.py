@@ -157,6 +157,8 @@ class Snapshot:
     # The matchup you're in. None when unknown, and moves are then judged on fpts alone.
     matchup: Optional[MatchupState] = None
     now: Optional[datetime] = None  # when the snapshot was taken; games that started before it are locked
+    season_end: Optional[int] = None  # the league's last scoring period
+    team_names: Dict[int, str] = field(default_factory=dict)  # fantasy team id -> name
 
     def roster_for_moves(self) -> List[PlayerView]:
         return self.my_roster if self.next_roster is None else self.next_roster

@@ -10,6 +10,7 @@ from .model import n_games
 from .history import brier
 from .lineup import TodayPlan
 from .recommend import HASHTAG_WINDOWS, Report
+from .trade import TradeReport, form
 
 
 WEAKEST_SHOWN = 5
@@ -213,6 +214,48 @@ def render(r: Report) -> str:
                     f"{w.edge:+.1f}/g vs {weakest}"
                 )
             lines.append(f"- {p.name} ({p.pro_team} {_pos(p)}, {p.percent_owned:.0f}% owned): {basis}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _trade_head(i: int, t) -> str:
+    give = " and ".join(f"**{v.player.name}**" for v in t.give)
+    get = " and ".join(f"**{v.player.name}**" for v in t.get)
+    return (
+        f"{i}. Send {give} to **{t.team_name}** for {get}. ~{t.gain:+.1f} fpts/week for you "
+        f"({t.total:+.0f} over the rest of the season). On current form they see {t.their_gain:+.1f}/week."
+    )
+
+
+def render_trades(r: TradeReport) -> str:
+    through = f" through {r.through:%b} {r.through.day}" if r.through else ""
+    lines: List[str] = [
+        f"**{r.team_name}: trade scout** (rest of season, {r.days} days{through})",
+        "",
+        "Each player has two values: *now* is the daily scout's, recent form first, which is what other "
+        "managers go by. *Rest of season* leans on his season and ESPN's projection. Trades are scored with "
+        "your best lineup each day: rest of season values for you, now values for them.",
+        "",
+        "**Top trades**",
+    ]
+    if len(r.trades) > 1:
+        lines.append("Alternatives, each judged on its own against your roster as it is:")
+    if r.trades:
+        for i, t in enumerate(r.trades, 1):
+            lines.append(_trade_head(i, t))
+            lines += [f"   - {reason}" for reason in t.reasons]
+    else:
+        even = "looks even" if r.fairness <= 0 else f"looks no more than {r.fairness:g} fpts/week worse"
+        lines.append(f"- None. No trade adds {r.min_gain:g}+ fpts/week for you and {even} to the other team on current form.")
+    lines.append("")
+
+    if r.sell_high:
+        lines.append("**Sell high** (your players running above their rest of season value)")
+        lines += [f"- {v.player.name} ({v.player.pro_team} {_pos(v.player)}): {form(v)} ({v.gap:+.1f})" for v in r.sell_high]
+        lines.append("")
+    if r.buy_low:
+        lines.append("**Buy low** (other teams' players running below theirs, good enough to start for you)")
+        lines += [f"- {v.player.name} ({v.player.pro_team} {_pos(v.player)}, {team}): {form(v)} ({v.gap:+.1f})"
+                  for v, team in r.buy_low]
     return "\n".join(lines).rstrip() + "\n"
 
 

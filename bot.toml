@@ -46,3 +46,22 @@ last_15 = 0.20
 season = 0.20
 projected = 0.25
 hashtag = 0.25             # Hashtag's per game stats scored with your league's points (points leagues only)
+
+[trade]
+# Trade scout: python -m fantasy_bot --trades
+# Sells players playing above their rest of season value for players playing below theirs.
+max_players = 2            # most players a side (1-for-1 up to 2-for-2)
+min_gain = 3.0             # fpts per week a trade must add for you over the rest of the season
+fairness = 0.0             # fpts per week a trade may look worse to the other team on current form
+shown = 5                  # trades listed
+projection_games = 20      # ESPN's projection counts as this many real games in the rest of season value
+
+[trade.weights]
+# Rest of season value. Leans on the season and ESPN's projection, so a hot or cold couple
+# of weeks is pulled back toward what a player was expected to do. The daily scout's
+# [weights] above are the "now" value: recent form, which is what other managers go by.
+last_7 = 0.0
+last_15 = 0.10
+season = 0.30
+projected = 0.45
+hashtag = 0.10             # Hashtag's season line in your scoring (points leagues only)

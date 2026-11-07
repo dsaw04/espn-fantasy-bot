@@ -1,4 +1,4 @@
-"""Run with:  python -m fantasy_bot [--config bot.toml] [--no-post] [--list-teams]"""
+"""Run with:  python -m fantasy_bot [--config bot.toml] [--no-post] [--list-teams] [--trades]"""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from .lineup import todays_lineup
 from .model import Snapshot
 from .opportunity import needs_game_logs
 from .recommend import build_report
-from .report import lineup_lines, lineup_needs_changes, post_to_discord, render
+from .report import lineup_lines, lineup_needs_changes, post_to_discord, render, render_trades
 from .scoring import Scorer
+from .trade import build_trades
 
 
 def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
@@ -53,6 +54,8 @@ def main() -> None:
     ap.add_argument("--list-teams", action="store_true", help="print team ids and exit")
     ap.add_argument("--lineup-only", action="store_true",
                     help="just check today's lineup, and post only when there's a new change to make")
+    ap.add_argument("--trades", action="store_true",
+                    help="suggest trades with the other teams instead of the daily report")
     ap.add_argument("--data-dir", help="folder for run history and alert state (the workflows use the bot-data branch)")
     args = ap.parse_args()
 
@@ -69,6 +72,10 @@ def main() -> None:
     post = bool(cfg.discord_webhook) and not args.no_post
     if args.lineup_only:
         lineup_check(source, cfg, args.data_dir, post)
+        return
+
+    if args.trades:
+        trade_scout(source, cfg, post)
         return
 
     snap = source.snapshot()
@@ -92,6 +99,19 @@ def main() -> None:
         alerts = Alerts(args.data_dir, snap.period_dates.get(snap.today) or snap.now.date())
         if lineup_needs_changes(report.lineup, cfg.lineup_min_gain) or report.lineup.warnings:
             alerts.mark_sent(alert_key(report.lineup))
+
+
+def trade_scout(source, cfg: Config, post: bool) -> None:
+    """Sell players running hot to the other teams for players off to a slow start."""
+    snap = source.snapshot()
+    source.attach_cards(snap.other_rostered)  # their recent form, not just season totals
+    add_injury_news(snap)
+    if cfg.hashtag_enabled:
+        add_hashtag_rankings(snap, cfg)
+    text = render_trades(build_trades(snap, cfg))
+    print(text)
+    if post:
+        post_to_discord(cfg.discord_webhook, text)
 
 
 def lineup_check(source, cfg: Config, data_dir, post: bool) -> None:

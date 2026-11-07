@@ -21,6 +21,11 @@ class Weights:
     hashtag: float = 0.25
 
 
+def trade_weights() -> Weights:
+    """The rest of season blend: the season and ESPN's projection over the last week or two."""
+    return Weights(last_7=0.0, last_15=0.10, season=0.30, projected=0.45, hashtag=0.10)
+
+
 @dataclass
 class Config:
     league_id: int
@@ -53,6 +58,15 @@ class Config:
     lineup_min_gain: float = 2.0  # fpts a better lineup must add today before the bot says to change it
 
     weights: Weights = field(default_factory=Weights)
+
+    # Trade scout (--trades): sells players running hot for players off to a slow start.
+    trade_max_players: int = 2  # most players a side
+    trade_min_gain: float = 3.0  # fpts per week a trade must add for you over the rest of the season
+    trade_fairness: float = 0.0  # fpts per week a trade may look worse to the other team on current form
+    trades_shown: int = 5
+    trade_weights: Weights = field(default_factory=trade_weights)
+    trade_projection_games: int = 20  # ESPN's projection counts as this many games in the rest of season value
+
     discord_webhook: Optional[str] = None
 
     # Hashtag Basketball 9-cat rankings, joined onto every player each run
@@ -82,6 +96,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
     bot = raw.get("bot", {})
     w = raw.get("weights", {})
     htb = raw.get("hashtag", {})
+    trade = raw.get("trade", {})
 
     def env(name: str, fallback=None):
         return os.environ.get(name) or fallback
@@ -108,6 +123,12 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         dtd_availability=float(bot.get("dtd_availability", 0.6)),
         lineup_min_gain=float(bot.get("lineup_min_gain", 2.0)),
         weights=Weights(**{k: float(v) for k, v in w.items()}),
+        trade_max_players=int(trade.get("max_players", 2)),
+        trade_min_gain=float(trade.get("min_gain", 3.0)),
+        trade_fairness=float(trade.get("fairness", 0.0)),
+        trades_shown=int(trade.get("shown", 5)),
+        trade_weights=Weights(**{**vars(trade_weights()), **{k: float(v) for k, v in trade.get("weights", {}).items()}}),
+        trade_projection_games=int(trade.get("projection_games", 20)),
         discord_webhook=env("DISCORD_WEBHOOK_URL", bot.get("discord_webhook")),
         hashtag_enabled=bool(htb.get("enabled", True)),
         hashtag_windows=list(htb.get("windows", ["season", "last_7", "last_14"])),

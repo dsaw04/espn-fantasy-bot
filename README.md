@@ -78,6 +78,21 @@ Players on waivers only count from the day their claim clears.
 
 ESPN doesn't publish future matchup dates. Matchups follow its Monday to Sunday weeks, with the All-Star break week and the one after it merged, which the bot finds as the longest stretch without games from January on.
 
+## Trade scout
+
+`python -m fantasy_bot --trades` suggests trades with the other teams: sell players running hot, buy players off to a slow start. Every player gets two per game values:
+
+- **Now** is the daily scout's value. It leans on the last week or two, which is also what other managers go by.
+- **Rest of season** is the same blend with the weights under `[trade.weights]`, which lean on the season average and ESPN's projection. The projection counts as `projection_games` real games (20 by default), so a hot or cold couple of weeks is pulled back toward what the player was expected to do. In points leagues, Hashtag's season line scored with your league's points is part of it too.
+
+A player whose now value is above his rest of season value is a **sell high**. One below it is a **buy low**.
+
+Every trade of up to `max_players` a side (1-for-1 up to 2-for-2) with every other team is scored the way the daily scout scores moves: by your best lineup each day, here from tomorrow to the end of the season. Your side uses rest of season values. Their side uses now values, since that's how the trade looks to them. When a side ends up with an extra player it drops its weakest per game (never an untouchable or a player it just traded for). When it has an open spot, it adds the best healthy free agent. A trade is listed when it adds `min_gain` fpts a week for you, looks no worse than `fairness` fpts a week to them (even or better by default), and the best player in the deal on current form goes to them. Two good players for one great one can add up on paper, but managers rarely give up the best player in a deal. The best 5 are shown, best for you first. Each is its own idea: no player you'd get shows up twice, but the same player of yours can go to different teams as alternatives.
+
+Each trade lists every player's splits (last 7, last 15, season, ESPN projection), both values, injury status, Hashtag's season line as a second opinion, and who each side would drop or pick up. Under the trades, the report lists your biggest sell high candidates and the biggest buy low targets on other teams who'd start for you.
+
+Other teams' rosters only come with season totals, so the trade scout fetches every rostered player's card for the last 7 and 15 day splits (a few extra requests). `trade-scout.yml` posts it to Discord every Monday. Like everything else, it only recommends: propose the trade in the ESPN app.
+
 ## Setup
 
 ```bash
@@ -97,6 +112,7 @@ python -m fantasy_bot --no-post        # print today's report
 2. Add repo secrets: `ESPN_S2`, `ESPN_SWID`, and optionally `DISCORD_WEBHOOK_URL`.
 3. Two workflows run on their own. You can also trigger either by hand from the Actions tab.
    - `daily-scout.yml` posts the full report at 18:30 UTC (7:30am NZ time, early afternoon US Eastern before tip-off).
+   - `trade-scout.yml` posts trade ideas on Mondays at 18:45 UTC. It keeps no state.
    - `lineup-check.yml` runs every hour from noon to 11pm US Eastern and posts only when your lineup needs a change it hasn't already told you about today. Late scratches and rest days usually show up about an hour before tip-off, after the daily report has gone out.
 
 Both keep their state on a `bot-data` branch, which the first run creates: which alerts went out today, and (see below) the run history. That's about 12 short runs a day, roughly 400 Actions minutes a month: free on a public repo, and inside the 2,000 free minutes on a private one. GitHub turns off scheduled workflows in a public repo after 60 days with no activity.
@@ -138,6 +154,8 @@ Local runs only log when given `--data-dir`.
 | `absorb_rate` | How much of an injured star's output flows to backups. 0.5 is a reasonable starting point. |
 | `min_minutes_for_depth` | Ignore injuries to players who weren't playing real minutes anyway. |
 | `weights` | Lean on `projected` early in the season, then shift to `last_7`/`last_15`. `hashtag` sets how much Hashtag's stats count in points leagues. |
+| `[trade]` | `max_players` a side, `min_gain` fpts a week for you, `fairness` fpts a week it may look worse to them, `shown` trades listed. Raise `fairness` to see bolder offers. |
+| `[trade.weights]` | The rest of season blend. More `projected` and a higher `projection_games` regress hot and cold starts harder. |
 
 ## Tests
 
@@ -152,5 +170,6 @@ Tests run on simulated league data, including a fake espn-api League, so they ne
 - ESPN's injury designations lag official NBA reports by a bit, so check late scratches before lock.
 - Game logs show who has stepped up, but the first game or two after an injury is a small sample. The bot doesn't read beat reporter news about who is actually starting.
 - The bot assumes an add counts against the matchup you make it in. If ESPN counts it against the matchup it takes effect in, a Sunday add is really one of next week's.
+- The trade scout values an injured player without a return date at nothing for the rest of the season, the same way the daily scout treats him as out. Check the news before buying low on one.
 - Return dates are estimates. A player still out past his date is treated as having no date at all, not as healthy.
 - espn-api is unofficial and ESPN occasionally changes its endpoints. If a run breaks, update with `pip install -U espn-api`.

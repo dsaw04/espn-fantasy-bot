@@ -218,30 +218,46 @@ class EspnSource:
             return None
         return [Player(e, self.cfg.year) for e in team.get("roster", {}).get("entries", [])]
 
-    def _my_roster(self, players: List[Player]) -> List[PlayerView]:
+    CARD_BATCH = 50  # players per player card request
+
+    def _cards(self, ids: List[int]) -> Dict[int, dict]:
+        """Player cards by player id, with the last 7 and 15 day splits and every game this season."""
+        out: Dict[int, dict] = {}
+        for i in range(0, len(ids), self.CARD_BATCH):
+            card = self.league.espn_request.get_player_card(
+                ids[i : i + self.CARD_BATCH], self.league.finalScoringPeriod,
+                additional_filters=[f"01{self.cfg.year}", f"02{self.cfg.year}"],
+            )
+            for entry in card.get("players", []):
+                out[entry.get("id", entry.get("player", {}).get("id"))] = entry
+        return out
+
+    def _enrich(self, v: PlayerView, entry: dict) -> None:
         """Roster entries carry lineup slots; player cards carry recent form. Merge them."""
-        ids = [p.playerId for p in players]
-        card = self.league.espn_request.get_player_card(
-            ids, self.league.finalScoringPeriod, additional_filters=[f"01{self.cfg.year}", f"02{self.cfg.year}"]
-        )
-        detailed = {}
-        logs = {}
-        for entry in card.get("players", []):
-            pl = Player(entry, self.cfg.year)
-            detailed[pl.playerId] = pl
-            logs[pl.playerId] = self._game_log(entry)  # the card already carries every game
+        richer = self._view(Player(entry, self.cfg.year), v.owner)
+        v.fpts.update(richer.fpts)
+        v.mpg.update(richer.mpg)
+        v.games_played = richer.games_played or v.games_played
+        v.game_log = self._game_log(entry)  # the card already carries every game
+
+    def _my_roster(self, players: List[Player]) -> List[PlayerView]:
+        cards = self._cards([p.playerId for p in players])
         views = []
         for p in players:
             v = self._view(p, "me")
-            d = detailed.get(p.playerId)
-            if d:
-                richer = self._view(d, "me")
-                v.fpts.update(richer.fpts)
-                v.mpg.update(richer.mpg)
-                v.games_played = richer.games_played or v.games_played
-                v.game_log = logs[p.playerId]
+            if p.playerId in cards:
+                self._enrich(v, cards[p.playerId])
             views.append(v)
         return views
+
+    def attach_cards(self, players: List[PlayerView]) -> None:
+        """Recent form and game logs for players from other teams' rosters, which only carry
+        season totals. The trade scout needs both for everyone it might trade for."""
+        players = [p for p in players if p.game_log is None]
+        cards = self._cards([p.id for p in players])
+        for p in players:
+            if p.id in cards:
+                self._enrich(p, cards[p.id])
 
     def _free_agents(self) -> List[PlayerView]:
         filters = {
@@ -391,4 +407,6 @@ class EspnSource:
             lineup_slots=slots,
             matchup=self._matchup(state, mine.team_name.strip(), my_roster, rosters, names),
             now=datetime.now(EASTERN),
+            season_end=last,
+            team_names=names,
         )
