@@ -8,6 +8,7 @@ Like the bot, it only reads from ESPN: make the moves in the ESPN app.
 from __future__ import annotations
 
 import hmac
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -139,7 +140,8 @@ def fetch(load, cfg: Config) -> Snapshot:
         return load(cfg, (cfg.league_id, cfg.year, cfg.team_id))
     except SystemExit as e:  # the adapter's explanation of what's wrong, e.g. expired cookies
         st.error(str(e))
-        st.caption("On Streamlit Cloud the cookies go under App settings > Secrets.")
+        st.caption("Deployed, the cookies go in the ESPN_S2 and ESPN_SWID environment variables, "
+                   "or the [league] table of Streamlit's secrets.")
     except requests.RequestException as e:
         st.error(f"Couldn't reach ESPN: {e}")
     st.stop()
@@ -387,7 +389,7 @@ def main() -> None:
     st.set_page_config(page_title="Fantasy scout", page_icon="🏀", layout="centered")
     st.html(STYLE)
     sec = secrets()
-    if not unlocked(str(sec.get("password", ""))):
+    if not unlocked(str(sec.get("password") or os.environ.get("APP_PASSWORD", ""))):
         return
     try:
         base = config(sec)

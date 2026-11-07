@@ -1,0 +1,22 @@
+# Render Blueprint for the phone app (streamlit_app.py). New > Blueprint on render.com,
+# pick this repo, and Render asks for the values marked sync: false.
+services:
+  - type: web
+    name: espn-fantasy-scout
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /_stcore/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      # ESPN cookies, the same ones secrets.toml holds
+      - key: ESPN_S2
+        sync: false
+      - key: ESPN_SWID
+        sync: false
+      # Anyone with the link sees your league, so set one
+      - key: APP_PASSWORD
+        sync: false

@@ -151,6 +151,16 @@ To deploy it on [Streamlit Community Cloud](https://share.streamlit.io) for free
 
 When the ESPN cookies expire, the app says so: paste the new ones under the app's **Settings > Secrets**. When nobody has opened it for a while the app goes to sleep, and the next visit takes a minute to wake it up.
 
+### On Render
+
+`render.yaml` is a [Render Blueprint](https://render.com/docs/blueprint-spec) for the app, on the free plan:
+
+1. Push the repo to GitHub. On [render.com](https://render.com), choose **New > Blueprint** and pick the repo.
+2. Render asks for three values: `ESPN_S2` and `ESPN_SWID` (the cookies from `secrets.toml`) and `APP_PASSWORD`, since anyone with the link would otherwise see your league.
+3. Apply. The app is at the `onrender.com` link Render shows, and redeploys on every push to `main`.
+
+League, year and team come from `bot.toml`. To use others, add `ESPN_LEAGUE_ID`, `ESPN_YEAR` or `ESPN_TEAM_ID` under the service's **Environment**, which is also where new cookies go when the old ones expire. A free service sleeps after 15 minutes without visits, and the next visit takes about a minute to wake it up.
+
 ## Track record
 
 Each daily report is logged to `runs.jsonl` on the `bot-data` branch: the matchup, both win chances, every suggested move and your roster's per game estimates. The first report of each matchup checks the one before it and adds a **Last week** section:
