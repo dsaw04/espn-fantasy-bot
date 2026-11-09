@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from difflib import SequenceMatcher, get_close_matches
 from itertools import combinations
 from typing import Callable, Dict, FrozenSet, Iterator, List, Optional, Sequence, Set, Tuple
 
@@ -333,3 +334,175 @@ def _reasons(t: Trade, snap: Snapshot) -> List[str]:
         elif m.next_opp is not None and ids & {p.id for p in m.next_opp.roster}:
             r.append(f"{t.team_name} is your opponent next week")
     return r
+
+
+# ---- evaluating a trade you name ---------------------------------------------------
+
+
+class TradeInputError(ValueError):
+    """A name that matches nobody, more than one player, or a player on the wrong side."""
+
+
+@dataclass
+class Evaluation:
+    trade: Trade
+    their_ros_gain: float  # fpts per week it really adds for them, on rest of season values
+    days: int
+    through: Optional[date]
+    verdict: str  # "good", "even" or "bad", for you
+    accepts: bool  # whether it looks no worse than the fairness bar to them on current form
+    notes: List[str] = field(default_factory=list)  # read-as corrections, untouchables, the best player
+    min_gain: float = 0.0
+    fairness: float = 0.0
+
+
+def _tokens_match(query: str, name: str) -> bool:
+    """'jokic' and 'n jok' match 'nikola jokic': every word of the query starts a word of the name."""
+    words = name.split()
+    return all(any(w.startswith(q) for w in words) for q in query.split())
+
+
+def find_player(query: str, pool: Sequence[PlayerView]) -> Tuple[PlayerView, Optional[str]]:
+    """The one player in pool a typed name means, and a note when it was read as someone
+    spelled differently. Accents, case, punctuation and Jr./III don't matter, a last name
+    alone works when it's unique, and a small typo is fixed when only one player is close."""
+    from .hashtag import name_key
+
+    key = name_key(query)
+    if not key:
+        raise TradeInputError("An empty player name.")
+    keys = {p.id: name_key(p.name) for p in pool}
+    exact = [p for p in pool if keys[p.id] == key]
+    if not exact:
+        exact = [p for p in pool if _tokens_match(key, keys[p.id])]
+    if len(exact) == 1:
+        return exact[0], None
+    if len(exact) > 1:
+        shown = ", ".join(f"{p.name} ({p.pro_team})" for p in exact[:6])
+        raise TradeInputError(f'"{query}" could be {shown}. Use more of the name.')
+    close = get_close_matches(key, sorted(set(keys.values())), n=3, cutoff=0.75)
+    if close:
+        ratios = [SequenceMatcher(None, key, k).ratio() for k in close]
+        clear = len(close) == 1 or ratios[0] - ratios[1] >= 0.1
+        hits = [p for p in pool if keys[p.id] == close[0]]
+        if clear and ratios[0] >= 0.85 and len(hits) == 1:
+            return hits[0], f'Read "{query}" as {hits[0].name}.'
+        names = " or ".join(p.name for k in close for p in pool if keys[p.id] == k)
+        raise TradeInputError(f'No player named "{query}". Did you mean {names}?')
+    raise TradeInputError(f'No player named "{query}" on any roster or in the free agent pool.')
+
+
+def find_players(snap: Snapshot, give: Sequence[str], get: Sequence[str]) -> Tuple[List[int], List[int], List[str]]:
+    """Typed names for each side to player ids, plus a note for each name read as a
+    different spelling. Raises TradeInputError listing every problem, not just the first."""
+    pool = snap.all_players()
+    mine = {p.id for p in snap.roster_for_moves()}
+    ids: Tuple[List[int], List[int]] = ([], [])
+    notes: List[str] = []
+    errors: List[str] = []
+    for side, names in enumerate((give, get)):
+        for name in names:
+            try:
+                p, note = find_player(name, pool)
+            except TradeInputError as e:
+                errors.append(str(e))
+                continue
+            if note:
+                notes.append(note)
+            if side == 0 and p.id not in mine:
+                where = "a free agent" if p.owner == "fa" else f"on {snap.team_names.get(p.team_id, 'another team')}"
+                errors.append(f"{p.name} is {where}, not on your team, so you can't send him.")
+            elif side == 1 and p.id in mine:
+                errors.append(f"{p.name} is already on your team.")
+            elif side == 1 and p.owner == "fa":
+                errors.append(f"{p.name} is a free agent: pick him up instead of trading for him.")
+            elif p.id in ids[side]:
+                errors.append(f"{p.name} is listed twice.")
+            else:
+                ids[side].append(p.id)
+    if not errors and len({p.team_id for p in pool if p.id in ids[1]}) > 1:
+        errors.append("Everyone you get has to come from the same team.")
+    if errors:
+        raise TradeInputError("\n".join(errors))
+    return ids[0], ids[1], notes
+
+
+def _verdict(gain: float, min_gain: float) -> str:
+    bar = max(min_gain, 0.5)
+    if gain >= bar:
+        return "good"
+    if gain <= -bar:
+        return "bad"
+    return "even"
+
+
+def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids: Sequence[int],
+                   notes: Sequence[str] = ()) -> Evaluation:
+    """Score a trade you name the way the trade scout scores the ones it finds: your best
+    lineups over the rest of the season on rest of season values, theirs on now values (how
+    it looks to them) and on rest of season values (what it really does for them). Any
+    number of players a side: the side that ends up with more drops its weakest, the side
+    with fewer picks up the best free agents."""
+    if not give_ids or not get_ids:
+        raise TradeInputError("Name at least one player on each side.")
+    me = snap.roster_for_moves()
+    mine_ids = {p.id for p in me}
+    by_id = {p.id: p for p in snap.all_players()}
+    missing = [i for i in list(give_ids) + list(get_ids) if i not in by_id]
+    if missing:
+        raise TradeInputError("Some of those players aren't in the league any more. Refresh and try again.")
+    give = [by_id[i] for i in give_ids]
+    get = [by_id[i] for i in get_ids]
+    if any(p.id not in mine_ids for p in give):
+        raise TradeInputError("Everyone you send has to be on your team.")
+    teams = {p.team_id for p in get}
+    if any(p.id in mine_ids or p.owner == "fa" for p in get) or len(teams) != 1:
+        raise TradeInputError("Everyone you get has to come from the same other team.")
+    tid = teams.pop()
+    roster = [p for p in snap.other_rostered if p.team_id == tid]
+
+    scorer = Scorer(snap, cfg)
+    ros_of: Dict[int, float] = {}
+
+    def ros(p: PlayerView) -> float:
+        if p.id not in ros_of:
+            ros_of[p.id] = per_game_value(p, cfg, snap.scoring, cfg.trade_weights, cfg.trade_projection_games, ROS_HASHTAG)
+        return ros_of[p.id]
+
+    def val(p: PlayerView) -> Valued:
+        return Valued(p, scorer.base(p), ros(p))
+
+    days = trade_days(snap)
+    weeks = max(len(days), 1) / 7
+    fas = [p for p in snap.free_agents if not p.is_out]
+    # Making room never cuts an untouchable; you can still choose to send one.
+    safe = mine_ids - {p.id for p in droppable(snap, cfg)}
+
+    mine_after, drop, add = _swap(me, give, get, safe, ros, sorted(fas, key=ros, reverse=True))
+    theirs_now, tdrop, tadd = _swap(roster, get, give, set(), scorer.base, sorted(fas, key=scorer.base, reverse=True))
+    theirs_ros, _, _ = _swap(roster, get, give, set(), ros, sorted(fas, key=ros, reverse=True))
+
+    ros_l = Lineups(snap, cfg, days, ros)
+    now_l = Lineups(snap, cfg, days, scorer.base)
+    total = ros_l.total(mine_after) - ros_l.total(me)
+    their_gain = (now_l.total(theirs_now) - now_l.total(roster)) / weeks
+    their_ros_gain = (ros_l.total(theirs_ros) - ros_l.total(roster)) / weeks
+
+    t = Trade(tid, snap.team_names.get(tid, f"team {tid}"), [val(p) for p in give], [val(p) for p in get],
+              total / weeks, total, their_gain, [val(p) for p in drop], [val(p) for p in add],
+              [val(p) for p in tdrop], [val(p) for p in tadd])
+    t.reasons = _reasons(t, snap)
+
+    out = list(notes)
+    sent = [p.name for p in give if p.id in safe]
+    if sent:
+        out.append(f"You've marked {' and '.join(sent)} untouchable.")
+    if max(v.now for v in t.get) > max(v.now for v in t.give):
+        best = max(t.get, key=lambda v: v.now).player.name
+        out.append(f"{best} is the best player in the deal on current form. Managers rarely give that up "
+                   "for lesser players, even when the totals look even.")
+    return Evaluation(
+        t, their_ros_gain, len(days), snap.period_dates.get(days[-1]) if days else None,
+        _verdict(t.gain, cfg.trade_min_gain), their_gain >= -cfg.trade_fairness, out,
+        cfg.trade_min_gain, cfg.trade_fairness,
+    )

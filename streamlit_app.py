@@ -19,8 +19,10 @@ from fantasy_bot.__main__ import scout_snapshot, trade_snapshot
 from fantasy_bot.config import Config, load_config
 from fantasy_bot.model import PlayerView, Snapshot, n_games
 from fantasy_bot.recommend import Report, build_report
-from fantasy_bot.report import WEAKEST_SHOWN, _hashtag_rank, lineup_needs_changes, move_value, render
-from fantasy_bot.trade import TradeReport, build_trades, form
+from fantasy_bot.report import (
+    WEAKEST_SHOWN, _hashtag_rank, evaluation_headline, lineup_needs_changes, move_value, render, render_evaluation,
+)
+from fantasy_bot.trade import Evaluation, TradeInputError, TradeReport, build_trades, evaluate_trade, form
 
 ROOT = Path(__file__).parent
 TTL = 15 * 60  # seconds a read from ESPN is reused before the next one
@@ -133,6 +135,11 @@ def daily_report(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple) -> 
 @st.cache_data(ttl=TTL, show_spinner="Scoring trades...")
 def trade_report(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple) -> TradeReport:
     return build_trades(_snap, _cfg)
+
+
+@st.cache_data(ttl=TTL, show_spinner="Scoring the trade...")
+def evaluation(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple, give: tuple, get: tuple) -> Evaluation:
+    return evaluate_trade(_snap, _cfg, give, get)
 
 
 def fetch(load, cfg: Config) -> Snapshot:
@@ -350,9 +357,100 @@ def trade_card(i: int, t) -> None:
             st.markdown("\n".join(f"- {md(x)}" for x in t.reasons))
 
 
-def trades(cfg: Config) -> None:
+def trades(cfg: Config, scout: Snapshot) -> None:
     st.caption("*Now* is recent form, which other managers go by. *Rest of season* leans on the season "
                "and ESPN's projection. Trades are scored with your best lineup each day.")
+    mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], default="Find trades",
+                                label_visibility="collapsed")
+    if mode == "Check a trade":
+        check_trade(cfg, scout)
+    else:
+        find_trades(cfg)
+
+
+VERDICT_BOX = {"good": st.success, "even": st.info, "bad": st.error}
+
+
+def player_label(p: PlayerView) -> str:
+    return f"{p.name} · {who(p)}"
+
+
+def check_trade(cfg: Config, scout: Snapshot) -> None:
+    """Pick both sides from the rosters, so every name is a real player on the right team.
+    Any number a side: a 3-for-1 makes room by dropping your weakest or adding free agents."""
+    teams = {}
+    for p in scout.other_rostered:
+        teams.setdefault(p.team_id, []).append(p)
+    if not teams:
+        st.info("No other teams found in the league.")
+        return
+    mine = sorted(scout.roster_for_moves(), key=lambda p: p.name)
+    by_id = {p.id: p for p in mine + scout.other_rostered}
+    tids = sorted(teams, key=lambda t: scout.team_names.get(t, ""))
+    with st.container(border=True):
+        tid = st.selectbox("Trade with", tids, format_func=lambda t: scout.team_names.get(t, f"team {t}"))
+        give = st.multiselect("You send", [p.id for p in mine], format_func=lambda i: player_label(by_id[i]),
+                              placeholder="Type a name", key="check_give")
+        get = st.multiselect("You get", [p.id for p in sorted(teams[tid], key=lambda p: p.name)],
+                             format_func=lambda i: player_label(by_id[i]), placeholder="Type a name",
+                             key=f"check_get_{tid}")
+    if not give or not get:
+        st.caption("Pick at least one player a side. Uneven trades are fine: the side with more players "
+                   "drops its weakest, the side with fewer picks up the best free agents.")
+        return
+    # The first check reads every roster's recent form; after that it updates as you pick.
+    if not st.session_state.get("trade_data_loaded"):
+        if not st.button("Evaluate", type="primary", width="stretch"):
+            st.caption("Reads every team's roster for recent form, so the first check takes about 30 seconds.")
+            return
+        st.session_state.trade_data_loaded = True
+
+    snap = fetch(trade_data, cfg)
+    try:
+        e = evaluation(snap, cfg, snap.now.isoformat(), trade_key(cfg), tuple(give), tuple(get))
+    except TradeInputError as err:
+        st.error(str(err))
+        return
+    show_evaluation(e)
+
+
+def show_evaluation(e: Evaluation) -> None:
+    t = e.trade
+    give = " and ".join(v.player.name for v in t.give)
+    get = " and ".join(v.player.name for v in t.get)
+    st.subheader(f"{give} for {get}", anchor=False)
+    VERDICT_BOX[e.verdict](md(evaluation_headline(e)))
+    row = st.container(horizontal=True)
+    row.metric("For you", f"{t.gain:+.1f}/wk", border=True, help="Rest of season values, best lineup each day")
+    row.metric("To them, now", f"{t.their_gain:+.1f}/wk", border=True, help="How it looks on current form")
+    row.metric("To them, really", f"{e.their_ros_gain:+.1f}/wk", border=True, help="Their side on rest of season values")
+    through = f" through {e.through:%b} {e.through.day}" if e.through else ""
+    st.caption(f"{t.total:+.0f} fpts for you over the rest of the season ({e.days} days{through}).")
+    for n in e.notes:
+        st.warning(md(n))
+
+    rows = []
+    for side, vs in (("Send", t.give), ("Get", t.get), ("You drop", t.drop), ("You add", t.add),
+                     ("They drop", t.their_drop), ("They add", t.their_add)):
+        for v in vs:
+            p = v.player
+            rows.append({"Side": side, "Player": p.name, "Team": who(p), "Now": v.now, "ROS": v.ros,
+                         "L7": p.fpts.get("last_7"), "L15": p.fpts.get("last_15"), "Season": p.fpts.get("season"),
+                         "Proj": p.fpts.get("projected"),
+                         "Status": "" if p.injury_status in ("", "ACTIVE") else p.status_label()})
+    num = st.column_config.NumberColumn(format="%.1f")
+    st.dataframe(rows, hide_index=True, width="stretch", column_config={
+        "Now": st.column_config.NumberColumn(format="%.1f", help="Fpts/g on recent form"),
+        "ROS": st.column_config.NumberColumn(format="%.1f", help="Fpts/g rest of season"),
+        "L7": num, "L15": num, "Season": num, "Proj": num,
+    })
+    with st.expander("Details"):
+        st.markdown("\n".join(f"- {md(x)}" for x in t.reasons))
+    with st.expander("Text report"):
+        st.code(render_evaluation(e), language=None, wrap_lines=True)
+
+
+def find_trades(cfg: Config) -> None:
     if not st.session_state.get("trades"):
         if not st.button("Find trades", type="primary", width="stretch"):
             st.caption("Reads every team's roster, so the first look takes about 30 seconds.")
@@ -408,7 +506,7 @@ def main() -> None:
     with pickups_tab:
         pickups(r)
     with trades_tab:
-        trades(cfg)
+        trades(cfg, snap)
 
 
 main()

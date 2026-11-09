@@ -1,4 +1,5 @@
-"""Run with:  python -m fantasy_bot [--config bot.toml] [--no-post] [--list-teams] [--trades]"""
+"""Run with:  python -m fantasy_bot [--config bot.toml] [--no-post] [--list-teams] [--trades]
+                                  [--give "A, B" --get "C"]"""
 
 from __future__ import annotations
 
@@ -14,9 +15,9 @@ from .lineup import todays_lineup
 from .model import Snapshot
 from .opportunity import needs_game_logs
 from .recommend import build_report
-from .report import lineup_lines, lineup_needs_changes, post_to_discord, render, render_trades
+from .report import lineup_lines, lineup_needs_changes, post_to_discord, render, render_evaluation, render_trades
 from .scoring import Scorer
-from .trade import build_trades
+from .trade import TradeInputError, build_trades, evaluate_trade, find_players
 
 
 def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
@@ -75,6 +76,10 @@ def main() -> None:
                     help="just check today's lineup, and post only when there's a new change to make")
     ap.add_argument("--trades", action="store_true",
                     help="suggest trades with the other teams instead of the daily report")
+    ap.add_argument("--give", action="append", default=[], metavar="NAMES",
+                    help='evaluate a trade: your players to send, comma separated (e.g. --give "Jokic, Herro")')
+    ap.add_argument("--get", action="append", default=[], metavar="NAMES",
+                    help="evaluate a trade: the players you'd get, all from one team, comma separated")
     ap.add_argument("--data-dir", help="folder for run history and alert state (the workflows use the bot-data branch)")
     args = ap.parse_args()
 
@@ -91,6 +96,10 @@ def main() -> None:
     post = bool(cfg.discord_webhook) and not args.no_post
     if args.lineup_only:
         lineup_check(source, cfg, args.data_dir, post)
+        return
+
+    if args.give or args.get:
+        evaluate(source, cfg, split_names(args.give), split_names(args.get), post)
         return
 
     if args.trades:
@@ -118,6 +127,27 @@ def main() -> None:
 def trade_scout(source, cfg: Config, post: bool) -> None:
     """Sell players running hot to the other teams for players off to a slow start."""
     text = render_trades(build_trades(trade_snapshot(source, cfg), cfg))
+    print(text)
+    if post:
+        post_to_discord(cfg.discord_webhook, text)
+
+
+def split_names(values) -> list:
+    """--give "A, B" --give C is A, B and C."""
+    return [n.strip() for v in values for n in v.split(",") if n.strip()]
+
+
+def evaluate(source, cfg: Config, give, get, post: bool) -> None:
+    """Score a trade you name, with the trade scout's values."""
+    if not give or not get:
+        sys.exit("Name at least one player on each side: --give for yours, --get for theirs.")
+    snap = trade_snapshot(source, cfg)
+    try:
+        give_ids, get_ids, notes = find_players(snap, give, get)
+        e = evaluate_trade(snap, cfg, give_ids, get_ids, notes)
+    except TradeInputError as err:
+        sys.exit(str(err))
+    text = render_evaluation(e)
     print(text)
     if post:
         post_to_discord(cfg.discord_webhook, text)

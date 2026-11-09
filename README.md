@@ -93,6 +93,18 @@ Each trade lists every player's splits (last 7, last 15, season, ESPN projection
 
 Other teams' rosters only come with season totals, so the trade scout fetches every rostered player's card for the last 7 and 15 day splits (a few extra requests). `trade-scout.yml` posts it to Discord every Monday. Like everything else, it only recommends: propose the trade in the ESPN app.
 
+### Check a trade
+
+To score a trade you have in mind, or one someone offered you, name both sides:
+
+```bash
+python -m fantasy_bot --give "Jokic, Tyler Herro" --get "Bam Adebayo" --no-post
+```
+
+Any number of players a side, so 3-for-1 works: the side that ends up with more players drops its weakest, and the side with fewer picks up the best healthy free agents. Names are forgiving: case, accents, punctuation and Jr./III don't matter, a last name alone works when only one player has it, and a small typo is fixed (the report says how it read the name). A name that could be several players, a player on the wrong side, a free agent, or players from more than one team is an error that says what to fix.
+
+The trade is scored exactly like the trade scout's: your best lineup each day over the rest of the season on rest of season values. The verdict is **Take it** when it adds `min_gain`+ fpts a week for you, **Pass** when it costs that much, and **About even** in between. It also says whether they'd likely accept (it looks no worse than `fairness` on current form to them), what it really does for them on rest of season values, and warns when you'd send an untouchable or ask for the best player in the deal.
+
 ## Setup
 
 ```bash
@@ -123,7 +135,7 @@ To get a Discord post: Server Settings > Integrations > Webhooks > New Webhook, 
 
 ## Phone app (Streamlit)
 
-`streamlit_app.py` shows the same reports as a web app built for phones: **Today** (the matchup, today's lineup, injuries and your roster's per game values), **Pickups**, **Trades** (loaded when you tap *Find trades*, since that reads every roster) and **Settings**, where you can try other untouchables, move limits and trade bars without editing `bot.toml`. Those changes last until the page reloads.
+`streamlit_app.py` shows the same reports as a web app built for phones: **Today** (the matchup, today's lineup, injuries and your roster's per game values), **Pickups**, **Trades** (*Find trades* or *Check a trade*, loaded when you tap a button, since that reads every roster) and **Settings**, where you can try other untouchables, move limits and trade bars without editing `bot.toml`. Those changes last until the page reloads.
 
 Each read from ESPN is reused for 15 minutes. *Refresh* reads it again. Run history isn't shown, since it lives on the `bot-data` branch.
 

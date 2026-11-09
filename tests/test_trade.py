@@ -237,3 +237,83 @@ def test_adapter_attaches_recent_form_to_other_teams_players():
     assert set(v.game_log) == {4} and v.owner == "other"
     src.attach_cards([v])  # already has them: no second request
     assert calls == [[7]]
+
+
+# ---- evaluating a trade you name ------------------------------------------------------
+from fantasy_bot.report import render_evaluation  # noqa: E402
+from fantasy_bot.trade import ROS_HASHTAG, TradeInputError, evaluate_trade, find_player, find_players  # noqa: E402
+
+
+def test_finds_players_by_name_forgiving_case_accents_and_typos():
+    pool = league().all_players()
+    assert find_player("cold wing", pool)[0].id == 10
+    assert find_player("  COLD-WING ", pool)[0].id == 10
+    assert find_player("Cold Wing Jr.", pool)[0].id == 10
+    assert find_player("slumping", pool) == (find_player("Slumping Big", pool)[0], None)  # one word, unique
+    p, note = find_player("Rival Centr", pool)
+    assert p.id == 12 and note == 'Read "Rival Centr" as Rival Center.'
+
+
+def test_says_which_players_a_name_could_be():
+    pool = league().all_players()
+    with pytest.raises(TradeInputError, match="could be"):
+        find_player("wing", pool)  # Cold Wing and Other Wing
+    with pytest.raises(TradeInputError, match="No player named"):
+        find_player("Zzyzx Qwerty", pool)
+
+
+def test_checks_each_side_belongs_where_it_should():
+    snap = league()
+    give, get, notes = find_players(snap, ["hot guard"], ["cold wing", "rival center"])
+    assert (give, get, notes) == ([1], [10, 12], [])
+    with pytest.raises(TradeInputError) as e:
+        find_players(snap, ["Cold Wing"], ["Free Agent", "Hot Guard"])
+    msg = str(e.value)
+    assert "Cold Wing is on Rival, not on your team" in msg
+    assert "Free Agent is a free agent" in msg and "Hot Guard is already on your team" in msg
+    with pytest.raises(TradeInputError, match="same team"):
+        find_players(snap, ["Hot Guard"], ["Cold Wing", "Other Guard"])
+
+
+def test_evaluates_a_trade_the_way_the_trade_scout_scores_it():
+    snap, c = league(), cfg(untouchable=["Untouchable Star"], trades_shown=50, trade_fairness=500)
+    days = trade_days(snap)
+    ros = lambda p: per_game_value(p, c, snap.scoring, c.trade_weights, c.trade_projection_games, ROS_HASHTAG)
+    lineups = Lineups(snap, c, days, ros)
+    after = [p for p in snap.my_roster if p.id != 1] + [snap.other_rostered[0]]
+    expected = (lineups.total(after) - lineups.total(snap.my_roster)) / (len(days) / 7)
+    e = evaluate_trade(snap, c, [1], [10])  # Hot Guard for Cold Wing, one for one
+    assert e.trade.gain == pytest.approx(expected) and e.trade.total == pytest.approx(expected * len(days) / 7)
+    assert not e.trade.drop and not e.trade.add
+    assert e.verdict == "good" and e.trade.team_name == "Rival"
+    assert any(r.startswith("Buy low: Cold Wing") for r in e.trade.reasons)
+
+
+def test_three_for_one_makes_room_on_both_sides():
+    snap, c = league(), cfg()
+    e = evaluate_trade(snap, c, [2, 3, 5], [11])  # three of yours for Their Star
+    t = e.trade
+    assert names(t.add) == ["Free Agent"]  # the only healthy free agent fills one of your two open spots
+    assert len(t.their_drop) == 2 and not set(names(t.their_drop)) & {"Steady Forward", "Steady Center", "Bench Guy"}
+    assert any("Their Star is the best player in the deal" in n for n in e.notes)
+
+
+def test_warns_when_you_send_an_untouchable_and_never_cuts_one():
+    e = evaluate_trade(league(), cfg(untouchable=["Untouchable Star"]), [4], [10, 12])
+    assert "You've marked Untouchable Star untouchable." in e.notes
+    e = evaluate_trade(league(), cfg(untouchable=["Untouchable Star"]), [5], [10, 12])
+    assert "Untouchable Star" not in names(e.trade.drop)
+
+
+def test_rejects_an_uneven_or_cross_team_trade_built_by_hand():
+    with pytest.raises(TradeInputError):
+        evaluate_trade(league(), cfg(), [], [10])
+    with pytest.raises(TradeInputError):
+        evaluate_trade(league(), cfg(), [1], [10, 20])  # two different teams
+
+
+def test_render_evaluation_is_readable():
+    text = render_evaluation(evaluate_trade(league(), cfg(), [1], [10]))
+    assert text.startswith("**Trade check**: Hot Guard to Rival for Cold Wing")
+    assert "fpts/week for you" in text and "on current form it looks" in text and "**Details**" in text
+    print(text)

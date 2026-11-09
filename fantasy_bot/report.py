@@ -10,7 +10,7 @@ from .model import n_games
 from .history import brier
 from .lineup import TodayPlan
 from .recommend import HASHTAG_WINDOWS, Report
-from .trade import TradeReport, form
+from .trade import Evaluation, TradeReport, form
 
 
 WEAKEST_SHOWN = 5
@@ -260,6 +260,45 @@ def render_trades(r: TradeReport) -> str:
         lines.append("**Buy low** (other teams' players running below theirs, good enough to start for you)")
         lines += [f"- {v.player.name} ({v.player.pro_team} {_pos(v.player)}, {team}): {form(v)} ({v.gap:+.1f})"
                   for v, team in r.buy_low]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+VERDICTS = {
+    "good": "Take it",
+    "even": "About even",
+    "bad": "Pass",
+}
+
+
+def evaluation_headline(e: Evaluation) -> str:
+    """The verdict in one line: what it does for you, then whether they'd go for it."""
+    t = e.trade
+    you = f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you ({t.total:+.0f} over the rest of the season)."
+    if e.accepts:
+        them = f"They should go for it: on current form it looks {t.their_gain:+.1f}/week to them."
+    else:
+        them = f"They'd likely say no: on current form it looks {t.their_gain:+.1f}/week to them."
+    return f"{you} {them}"
+
+
+def render_evaluation(e: Evaluation) -> str:
+    t = e.trade
+    through = f" through {e.through:%b} {e.through.day}" if e.through else ""
+    give = " and ".join(v.player.name for v in t.give)
+    get = " and ".join(v.player.name for v in t.get)
+    lines: List[str] = [
+        f"**Trade check**: {give} to {t.team_name} for {get} (rest of season, {e.days} days{through})",
+        "",
+        f"**{evaluation_headline(e)}**",
+        f"On rest of season values it really adds {e.their_ros_gain:+.1f}/week for them.",
+        "",
+        f"Per game, you send {sum(v.ros for v in t.give):.1f} rest of season ({sum(v.now for v in t.give):.1f} now) "
+        f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now). The weekly numbers "
+        "count only the games that make your best lineup each day.",
+    ]
+    if e.notes:
+        lines += [""] + [f"- {n}" for n in e.notes]
+    lines += ["", "**Details**"] + [f"- {r}" for r in t.reasons]
     return "\n".join(lines).rstrip() + "\n"
 
 
