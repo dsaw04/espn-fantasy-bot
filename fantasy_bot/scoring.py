@@ -77,6 +77,17 @@ def per_game_value(
     return sum(v * wt for v, wt in used) / total_w
 
 
+# Hashtag windows for the rest of season value: the whole season first.
+ROS_HASHTAG = ("season", "last_30", "last_14", "last_7")
+
+
+def rest_of_season(p: PlayerView, cfg: Config, scoring: Optional[Dict[str, float]] = None) -> float:
+    """Per game value over the rest of the season: the trade weights, which lean on the season
+    and ESPN's projection, so a hot or cold couple of weeks, or a game he left hurt, barely
+    moves it. Ignores injuries: it's what he's worth when he plays."""
+    return per_game_value(p, cfg, scoring, cfg.trade_weights, cfg.trade_projection_games, ROS_HASHTAG)
+
+
 def minutes(p: PlayerView) -> float:
     for key in ("last_7", "last_15", "season", "projected"):
         if p.mpg.get(key):

@@ -13,7 +13,7 @@ untouchable = ["Cade Cunningham"]
 
 max_moves = 2              # most add/drop suggestions per day (never more than the adds you have left)
 options_shown = 10         # swaps listed in all: the picks above, then the next best on their own
-streaming_spots = 2        # your weakest N players rotate whenever a pickup...
+streaming_spots = 2        # your weakest N players (the better of recent form and rest of season) rotate whenever a pickup...
 min_win_gain = 0.03        # ...adds this much to your chance of winning this week plus next (0.03 = 3 points)
 projection_error = 0.15    # how far off a per game estimate typically is; widens the win chance spread
 min_edge = 4.0             # everyone else is core: an add must out-score them by this many fpts per game

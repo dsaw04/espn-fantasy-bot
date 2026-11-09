@@ -206,7 +206,9 @@ def settings(cfg: Config, snap: Snapshot) -> Config:
         max_moves = st.number_input("Most moves a day", 0, 7, cfg.max_moves)
         streaming = st.number_input(
             "Streaming spots", 0, 6, cfg.streaming_spots,
-            help="Your weakest N players rotate freely. Everyone else only moves for a clear upgrade.",
+            help="Your weakest N players rotate freely, judged on the better of recent form and rest of season, "
+                 "so a star in a slump or back from injury is never one. Everyone else only moves for a clear "
+                 "upgrade on that same better value.",
         )
         win_gain = st.slider("Win chance a streaming move must add (points)", 0.0, 10.0, cfg.min_win_gain * 100, 0.5, format="%.1f")
         min_edge = st.number_input("Fpts/g a pickup must beat a core player by", 0.0, 20.0, cfg.min_edge, 0.5)

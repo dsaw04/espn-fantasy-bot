@@ -45,10 +45,8 @@ from .config import Config
 from .lineup import assign, starting_slots
 from .model import PlayerView, Snapshot
 from .recommend import droppable
-from .scoring import Scorer, availability_on, per_game_value
+from .scoring import ROS_HASHTAG, Scorer, availability_on, rest_of_season  # noqa: F401 (ROS_HASHTAG re-exported)
 
-# Hashtag windows for the rest of season value: the whole season first.
-ROS_HASHTAG = ("season", "last_30", "last_14", "last_7")
 SIGNAL = 2.0  # fpts per game between now and rest of season that makes a sell high or buy low
 SHORTLIST = 60  # trades per team scored with full lineups, picked on a quick estimate
 LISTED = 5  # sell high and buy low candidates listed
@@ -195,11 +193,12 @@ CUT_EDGE = 1.25  # a player is cut only for a free agent worth this much more ov
 
 
 def _upgrade(roster: List[PlayerView], keep: Set[int], long: Callable[[PlayerView], float],
-             free: Iterator[PlayerView]):
+             free: Iterator[PlayerView], per_game: Optional[Callable[[PlayerView], float]] = None):
     """The weakest player not in keep cut for the best free agent left in free (best first),
     again and again, while the free agent is worth CUT_EDGE times as much over the rest of the
     season (long). A manager doesn't cut a player out for a few days or in a slump for a waiver
-    pickup that's about as good.
+    pickup that's about as good. Nor does he cut a better player per game (per_game) for a worse
+    one: a star out for weeks scores little over the rest of the season, but he's a keeper.
 
     No trade is needed for this, so the trade scout makes the same moves on each roster as it
     stands to get the baseline a trade is measured against.
@@ -211,6 +210,8 @@ def _upgrade(roster: List[PlayerView], keep: Set[int], long: Callable[[PlayerVie
     for p in sorted((p for p in roster if p.id not in keep), key=long):
         if best is None or long(best) < CUT_EDGE * long(p):
             break
+        if per_game is not None and per_game(p) > per_game(best):
+            continue  # hurt, not bad: keep him
         drop.append(p)
         add.append(best)
         best = next(free, None)
@@ -245,7 +246,7 @@ def _swap(roster: List[PlayerView], out: Sequence[PlayerView], into: Sequence[Pl
         add = list(islice(free, len(roster) - len(after)))
     cut = {p.id for p in drop}
     after = [p for p in after if p.id not in cut] + add
-    after, more_drop, more_add = _upgrade(after, set(keep) | {p.id for p in add}, long, free)
+    after, more_drop, more_add = _upgrade(after, set(keep) | {p.id for p in add}, long, free, value)
     return after, drop + more_drop, add + more_add
 
 
@@ -312,7 +313,8 @@ class _Market:
         for p in snap.other_rostered:
             self.teams.setdefault(p.team_id, []).append(p)
         # Your roster after the free agent moves you'd make anyway: what every trade is measured against.
-        self.base_me, self.base_drop, self.base_add = _upgrade(self.me, self.safe, self.season, iter(self.fa_ros))
+        self.base_me, self.base_drop, self.base_add = _upgrade(self.me, self.safe, self.season, iter(self.fa_ros),
+                                                               self.ros)
         self.my_before = self.ros_lineups.total(self.base_me)
         self.my_solo = sum(self.ros_lineups.solo(p) for p in self.base_me)
         self._their_base: Dict[int, Tuple[List[PlayerView], Set[int], Set[int], float]] = {}
@@ -323,7 +325,7 @@ class _Market:
         if tid not in self._their_base:
             taken = _ids_of(self.base_add)
             roster, drop, add = _upgrade(self.teams[tid], set(), self.season,
-                                         (p for p in self.fa_ros if p.id not in taken))
+                                         (p for p in self.fa_ros if p.id not in taken), self.their)
             self._their_base[tid] = (roster, _ids_of(drop), _ids_of(add), self.their_lineups.total(roster))
         return self._their_base[tid]
 
@@ -342,8 +344,7 @@ class _Market:
 
     def ros(self, p: PlayerView) -> float:
         if p.id not in self._ros:
-            self._ros[p.id] = per_game_value(p, self.cfg, self.snap.scoring, self.cfg.trade_weights,
-                                             self.cfg.trade_projection_games, ROS_HASHTAG)
+            self._ros[p.id] = rest_of_season(p, self.cfg, self.snap.scoring)
         return self._ros[p.id]
 
     def season(self, p: PlayerView) -> float:

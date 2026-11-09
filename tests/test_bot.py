@@ -794,3 +794,20 @@ def test_a_backups_role_ends_when_the_starter_is_due_back():
     # 32 a game while the starter sits (10, 11), then his usual 15 (12, 13), less Old Stream's 16.
     # Without a return date it was 4 x 32 - 16 = 112.
     assert m.gain == pytest.approx(32 + 32 + 15 + 15 - 16)
+
+
+# ---- keepers ------------------------------------------------------------------
+def test_a_keeper_who_left_a_game_hurt_is_never_dropped_for_next_weeks_schedule():
+    # A 45/g star who left his last game hurt and is out past the horizon: on recent form he
+    # looks like a 26/g player worth nothing this week, the weakest on the roster. He's a keeper.
+    snap = scenario()
+    keeper = pv(6, "Keeper Star", "ORL", 19, F, 45, 34, HORIZON, lineup_slot="BE", acquisition_type="DRAFT",
+                injury_status="OUT", expected_return=date(2026, 12, 1))
+    keeper.fpts["last_7"] = 4
+    snap.my_roster = [p for p in snap.my_roster if p.id in (1, 2)] + [keeper]  # Star Guard, Bench Guard
+    snap.free_agents.append(pv(35, "Hot FA", "WAS", 27, C, 33, 32, HORIZON, percent_owned=40))
+    for spots in (0, 1):
+        r = build_report(snap, cfg(streaming_spots=spots))
+        assert r.per_game[keeper.id] < 30  # a 45/g player, dragged down by one game
+        assert keeper.id not in r.streamers
+        assert all(m.drop.player.id != keeper.id for m in r.moves + r.options)

@@ -12,7 +12,7 @@ from .lineup import TodayPlan, Week, todays_lineup
 from .matchup import Judge, Verdict
 from .model import MatchupState, PlayerView, Snapshot, n_games
 from .opportunity import Opportunity, fresh_injuries, opportunities
-from .scoring import Role, Scorer, Valuation, availability_on, hashtag_behind, value_on
+from .scoring import Role, Scorer, Valuation, availability_on, hashtag_behind, rest_of_season, value_on
 
 
 @dataclass
@@ -210,10 +210,11 @@ def _consistent(opp: Optional[Opportunity], drop: PlayerView, drop_per_game: flo
 
 
 def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
-    """Your weakest few players are streaming spots: anyone who adds enough to your chance
-    of winning this week and next replaces them (or, without a matchup, enough fpts over the
-    horizon). Everyone else is core and only moves for a consistent per game upgrade of
-    min_edge."""
+    """Your weakest few players over the rest of the season are streaming spots: anyone who
+    adds enough to your chance of winning this week and next replaces them (or, without a
+    matchup, enough fpts over the horizon). Everyone else is core and only moves for a
+    consistent per game upgrade of min_edge over the better of his value now and over the rest
+    of the season, so a keeper who's hurt or in a slump is never swapped for next week's schedule."""
     all_opps = opportunities(snap, cfg)
     opps_by_player: Dict[int, List[Opportunity]] = {}
     for o in all_opps:
@@ -229,7 +230,12 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
     days = judge.days
     roster = [scorer.value(p, days) for p in droppable(snap, cfg)]
     roster.sort(key=lambda v: value[v.player.id])
-    streamers = {v.player.id for v in roster[: cfg.streaming_spots]}
+    # Streaming spots on the better of his value now and over the rest of the season: a star who
+    # left a game hurt or had a cold week drops down the recent form list, but he's no streamer,
+    # and neither is a backup you just added for the bigger role he has while a starter sits.
+    ros = {v.player.id: rest_of_season(v.player, cfg, snap.scoring) for v in roster}
+    worth = lambda v: max(value[v.player.id], ros[v.player.id])
+    streamers = {v.player.id for v in sorted(roster, key=worth)[: cfg.streaming_spots]}
     # Everyone you'd field, untouchables included.
     lineup = start = [(p, roles[p.id]) for p in snap.roster_for_moves()]
     verdict = before = judge(lineup)
@@ -260,7 +266,10 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
         if best is None:
             for drop in drops:  # weakest per game first
                 dv = value[drop.player.id]
-                if drop.player.id not in streamers and per_game - dv >= cfg.min_edge and _consistent(opp, drop.player, dv):
+                # The edge is over his better value, now or rest of season: a keeper in a slump
+                # or back from injury isn't dropped for a free agent who's only hot right now.
+                if (drop.player.id not in streamers and per_game - max(dv, ros[drop.player.id]) >= cfg.min_edge
+                        and _consistent(opp, drop.player, dv)):
                     return swap(drop, "core")
         return best
 
