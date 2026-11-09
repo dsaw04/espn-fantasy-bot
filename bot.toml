@@ -52,7 +52,7 @@ hashtag = 0.25             # Hashtag's per game stats scored with your league's 
 # Sells players playing above their rest of season value for players playing below theirs.
 max_players = 2            # most players a side (1-for-1 up to 2-for-2)
 min_gain = 3.0             # fpts per week a trade must add for you over the rest of the season
-fairness = 0.0             # fpts per week a trade may look worse to the other team; below 0, the least it must help them too (-5: both gain 5+)
+fairness = 0.0             # fpts per week a trade may be worse for the other team at face value (0: at least even for them)
 their_recent = 0.5         # how much the other manager goes by recent form: 1 = recent form only, 0 = rest of season only
 shown = 5                  # trades listed
 projection_games = 20      # ESPN's projection counts as this many real games in the rest of season value

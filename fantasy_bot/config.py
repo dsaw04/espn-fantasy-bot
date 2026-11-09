@@ -62,8 +62,8 @@ class Config:
     # Trade scout (--trades): sells players running hot for players off to a slow start.
     trade_max_players: int = 2  # most players a side
     trade_min_gain: float = 3.0  # fpts per week a trade must add for you over the rest of the season
-    # fpts per week a trade may look worse to the other team. Below 0, the least it has to
-    # help them too: -5 lists only trades that add 5+ fpts a week for both sides.
+    # fpts per week a trade may be worse for the other team at face value. 0: at least even
+    # for them. Whatever this is, a trade never loses you the trade at face value.
     trade_fairness: float = 0.0
     # How the other manager values his players: this share recent form ("now"), the rest rest
     # of season. Free agents always count at rest of season value: a streamer, not a keeper.
@@ -130,7 +130,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         weights=Weights(**{k: float(v) for k, v in w.items()}),
         trade_max_players=int(trade.get("max_players", 2)),
         trade_min_gain=float(trade.get("min_gain", 3.0)),
-        trade_fairness=float(trade.get("fairness", 0.0)),
+        trade_fairness=max(0.0, float(trade.get("fairness", 0.0))),
         trade_their_recent=min(1.0, max(0.0, float(trade.get("their_recent", 0.5)))),
         trades_shown=int(trade.get("shown", 5)),
         trade_weights=Weights(**{**vars(trade_weights()), **{k: float(v) for k, v in trade.get("weights", {}).items()}}),

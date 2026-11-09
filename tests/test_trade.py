@@ -358,9 +358,12 @@ def test_a_bad_trade_gets_better_ones_with_the_same_team_around_the_same_player(
 
 
 def test_alternatives_can_be_uneven():
-    # Bolder bars let in packages and spreads, so each shape gets a turn.
+    # Bolder bars let in uneven deals, so each shape gets a turn. A package (you send more) only
+    # passes when what you get is worth at least as much as everything you send, which nothing on
+    # Rival is for Hot Guard plus anyone, so it's the 1-for-1s and the spreads here.
     e = evaluate_trade(league(), cfg(trade_fairness=500, trade_min_gain=-500), [1], [14])
-    assert {shape_of(len(a.give), len(a.get)) for a in e.alternatives} >= {"1-for-1", "package", "spread"}
+    shapes = {shape_of(len(a.give), len(a.get)) for a in e.alternatives}
+    assert shapes >= {"1-for-1", "spread"} and "package" not in shapes
 
 
 def test_says_none_when_no_alternative_works():
@@ -570,25 +573,47 @@ def test_render_trades_with_one_team():
     assert "None. No trade with Rival sending Hot Guard adds 1000+ fpts/week" in text
 
 
-# ---- trades where both teams gain ------------------------------------------------------------
-from fantasy_bot.report import their_bar  # noqa: E402
+# ---- you never lose the trade ----------------------------------------------------------------
+from fantasy_bot.report import bar_text, their_bar  # noqa: E402
 
 
-def test_a_bar_for_how_much_they_gain_too():
+def test_bar_wording():
     assert their_bar(0) == "is at least even for them at face value"
     assert their_bar(4) == "is no more than 4 fpts/week worse for them at face value"
-    assert their_bar(-5) == "adds 5+ fpts/week for them too at face value"
-    c = cfg(untouchable=["Untouchable Star"], trade_fairness=-5)
-    s = search_trades(league(), c, team_id=2)
-    assert all(t.their_face >= 5 and t.gain >= c.trade_min_gain for t in s.trades)
-    text = render_search(search_trades(league(), cfg(trade_fairness=-5, trade_min_gain=1000), team_id=2))
-    assert "adds 1000+ fpts/week for you and adds 5+ fpts/week for them too at face value" in text
+    assert bar_text(3, 0) == ("adds 3+ fpts/week for you without losing you the trade at face value, "
+                              "and is at least even for them at face value")
+    assert bar_text(3, float("inf")) == "adds 3+ fpts/week for you without losing you the trade at face value"
 
 
-def test_wanting_them_to_gain_doesnt_change_whether_they_would_accept():
-    e = evaluate_trade(league(), cfg(trade_fairness=-1000), [1], [10], alternatives=False)  # Hot Guard for Cold Wing
-    assert e.trade.their_face > 0 and e.accepts  # they'd take it...
-    assert any("under the +1000/week you want them to get out of it too" in n for n in e.notes)  # ...but it's under your bar
+def test_nothing_listed_loses_you_the_trade():
+    for c in (cfg(untouchable=["Untouchable Star"]), cfg(trade_fairness=float("inf"), trade_min_gain=-1000)):
+        listed = build_trades(league(), c).trades + search_trades(league(), c, [1]).trades
+        listed += search_trades(league(), c, team_id=2).trades + evaluate_trade(league(), c, [1], [14]).alternatives
+        assert listed and all(t.face >= 0 for t in listed)
+
+
+def deep_bench():
+    """Your roster with two more 21/g guards, so guards pile up and one sits most nights."""
+    snap = league()
+    snap.my_roster += [steady(6, "Spare Guard", G, 21, owner="me"), steady(7, "Other Spare", G, 21, owner="me")]
+    return snap
+
+
+def test_a_trade_that_helps_your_lineup_but_loses_on_talent_is_flagged():
+    # Two 21/g guards for Cold Wing (~40 rest of season): your lineup gets better, since a guard was
+    # sitting and he fills the empty forward spot, but you give up more than you get.
+    e = evaluate_trade(deep_bench(), cfg(), [6, 7], [10], alternatives=False)
+    assert e.trade.gain >= 3 and e.trade.face < 0
+    assert e.verdict == "feeding" and any(n.startswith("You lose this trade") for n in e.notes)
+    assert "Careful, you lose this one" in render_evaluation(e)
+    found = search_trades(deep_bench(), cfg(trade_fairness=float("inf")), [6, 7], team_id=2).trades
+    assert all(t.face >= 0 for t in found)
+    assert not any(set(names(t.give)) == {"Spare Guard", "Other Spare"} and names(t.get) == ["Cold Wing"] for t in found)
+
+
+def test_not_asking_them_still_says_whether_they_would_accept():
+    e = evaluate_trade(league(), cfg(trade_fairness=float("inf")), [1], [10], alternatives=False)
+    assert e.accepts == (e.trade.their_face >= 0)
 
 
 def test_team_records():

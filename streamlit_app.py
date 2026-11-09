@@ -22,7 +22,7 @@ from fantasy_bot.model import PlayerView, Snapshot, n_games
 from fantasy_bot.recommend import Report, build_report
 from fantasy_bot.report import (
     WEAKEST_SHOWN, _hashtag_rank, evaluation_headline, lineup_needs_changes, move_value, no_alternatives, render,
-    breakdown, pickups_line, render_evaluation, render_search, search_none, search_subject, their_bar,
+    breakdown, pickups_line, render_evaluation, render_search, search_none, search_subject, bar_text,
 )
 from fantasy_bot.trade import (
     SEARCH_PER_TEAM, Evaluation, TradeInputError, TradeReport, TradeSearch, build_trades, evaluate_trade, form,
@@ -217,8 +217,8 @@ def settings(cfg: Config, snap: Snapshot) -> Config:
             help="The rest is rest of season value. 100 judges trades for them on the last week or two only.",
         )
         st.form_submit_button("Apply", type="primary", width="stretch")
-    st.caption("These last until you reload the page. The defaults live in bot.toml. What the other team must "
-               "get out of a trade is on the Trades tab.")
+    st.caption("These last until you reload the page. The defaults live in bot.toml. Whether trades must look "
+               "acceptable to the other team is on the Trades tab.")
     return replace(
         cfg, untouchable=untouchable, max_moves=int(max_moves), streaming_spots=int(streaming),
         min_win_gain=win_gain / 100, min_edge=min_edge,
@@ -227,28 +227,16 @@ def settings(cfg: Config, snap: Snapshot) -> Config:
     )
 
 
-THEIR_SHARE_MIN, THEIR_SHARE_MAX = -20.0, 20.0
-
-
-def their_share(cfg: Config) -> Config:
-    """What a trade has to do for the other team, from "they can lose a bit" to "they have
-    to gain too". Stored as trade_fairness, the other way round: fairness 5 lets a trade be
-    5 fpts/week worse for them at face value, -5 means it has to add 5+ for them."""
-    default = min(THEIR_SHARE_MAX, max(THEIR_SHARE_MIN, -cfg.trade_fairness))
-    share = st.slider(
-        "What they must get out of it (fpts/week)", THEIR_SHARE_MIN, THEIR_SHARE_MAX, default, 1.0,
-        key="their_share", format="%+.0f",
-        help="Judged at face value for them: the players they get less the players they send, every game "
-             "counted, no drops or free agent pickups. Above 0: only trades where they gain at least this "
-             "much too, for trading with teams that need "
-             "help as much as you do. 0: at least even for them. Below 0: they can lose up to this much, for "
-             "bolder offers they may turn down.",
+def realistic(cfg: Config) -> Config:
+    """Every trade the bot suggests helps your lineup and never loses you the trade at face
+    value. This only decides whether it also has to look acceptable to them."""
+    on = st.toggle(
+        "Only trades they'd likely accept", value=True, key="realistic",
+        help="On: each trade is also at least even for them at face value, the way they'd value their "
+             "players, so it's an offer they might take. Off: anything that's better for you, even if "
+             "they'd never say yes. Either way you never give up more than you get.",
     )
-    if share > 0:
-        st.caption(f"Win-win only: each trade adds {share:g}+ fpts/week for them too, at face value.")
-    elif share < 0:
-        st.caption(f"Bolder: trades can be up to {-share:g} fpts/week worse for them at face value.")
-    return replace(cfg, trade_fairness=-share)
+    return cfg if on else replace(cfg, trade_fairness=float("inf"))
 
 
 def matchup(r: Report) -> None:
@@ -412,14 +400,14 @@ def trades(cfg: Config, scout: Snapshot) -> None:
     st.session_state.setdefault("trade_mode", "Find trades")  # here, not default=, so Check this one can set it
     mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], key="trade_mode",
                                 label_visibility="collapsed")
-    cfg = their_share(cfg)
+    cfg = realistic(cfg)
     if mode == "Check a trade":
         check_trade(cfg, scout)
     else:
         find_trades(cfg, scout)
 
 
-VERDICT_BOX = {"good": st.success, "even": st.info, "bad": st.error}
+VERDICT_BOX = {"good": st.success, "feeding": st.warning, "even": st.info, "bad": st.error}
 
 
 def player_label(p: PlayerView) -> str:
@@ -569,8 +557,7 @@ def partner_picker(scout: Snapshot) -> Optional[int]:
 
     return st.selectbox(
         "Trade partner (optional)", [None] + tids, key="partner", format_func=label,
-        help="Worst record first. Pick a team to see the best trades with that manager alone. Pair it with "
-             "a positive *What they must get out of it* for trades that help both of you.",
+        help="Worst record first. Pick a team to see the best trades with that manager alone.",
     )
 
 
@@ -600,7 +587,7 @@ def find_trades(cfg: Config, scout: Snapshot) -> None:
     for i, t in enumerate(tr.trades, 1):
         trade_card(i, t)
     if not tr.trades:
-        st.info(f"None. No trade adds {tr.min_gain:g}+ fpts/week for you and {their_bar(tr.fairness)}.")
+        st.info(f"None. No trade {bar_text(tr.min_gain, tr.fairness)}.")
 
     if tr.sell_high:
         st.subheader("Sell high", anchor=False)
@@ -624,7 +611,7 @@ def show_search(s: TradeSearch) -> None:
         return
     teams = "team" if s.teams_searched == 1 else "teams"
     through = f" through {s.through:%b} {s.through.day}" if s.through else ""
-    where = (f"Best with {s.partner}: each adds {s.min_gain:g}+ fpts/week for you and {their_bar(s.fairness)}"
+    where = (f"Best with {s.partner}: each {bar_text(s.min_gain, s.fairness)}"
              if s.partner
              else f"Best across {s.teams_searched} {teams}" + (f", at most {SEARCH_PER_TEAM} with any one"
                                                                if s.teams_searched > 1 else ""))

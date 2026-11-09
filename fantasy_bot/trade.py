@@ -288,18 +288,25 @@ class _Market:
         return self.snap.team_names.get(tid, f"team {tid}")
 
     def quick(self, tid: int, deals: Iterable[Tuple[tuple, tuple]]) -> List[_Deal]:
-        """Every deal fair enough to them at face value (exact, and cheap, so it's checked
-        first) that helps you on a quick estimate, which counts every game as a start. The
-        full scoring is too slow for every deal."""
+        """Every deal you win at face value, fair enough to them at face value (both exact
+        and cheap, so they're checked first), that helps you on a quick estimate, which counts
+        every game as a start. The full scoring is too slow for every deal."""
         out = []
         for give, get in deals:
-            if self.their_face(give, get) < -self.cfg.trade_fairness:
+            if self.my_face(give, get) < 0 or self.their_face(give, get) < -self.cfg.trade_fairness:
                 continue
             d = self.quick_one(tid, give, get)
             d.ours = (sum(self.ros_lineups.solo(p) for p in d.mine) - self.my_solo) / self.weeks
             if d.ours > 0:
                 out.append(d)
         return out
+
+    def my_face(self, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> float:
+        """Fpts per week you gain at face value on rest of season values: what you get less
+        what you send, every game counted, nobody dropped or picked up. Below 0 you lose the
+        trade: you give up more than you get, whatever it does for your lineup."""
+        solo = self.ros_lineups.solo
+        return (sum(map(solo, get)) - sum(map(solo, give))) / self.weeks
 
     def their_face(self, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> float:
         """Fpts per week the other team gains at face value, the way they'd value players:
@@ -328,7 +335,7 @@ class _Market:
             tid, self.team_name(tid), [v(p) for p in d.give], [v(p) for p in d.get],
             total / self.weeks, total, their_gain, [v(p) for p in d.drop], [v(p) for p in d.add],
             [v(p) for p in d.their_drop], [v(p) for p in d.their_add],
-            face=(sum(map(mine_l.solo, d.get)) - sum(map(mine_l.solo, d.give))) / self.weeks,
+            face=self.my_face(d.give, d.get),
             their_face=self.their_face(d.give, d.get),
             fa_gain=self._pickups(mine_l, d.mine, d.add),
             their_fa_gain=self._pickups(theirs_l, d.theirs, d.their_add),
@@ -343,9 +350,11 @@ class _Market:
         return (lineups.total(roster) - lineups.total([p for p in roster if p.id not in added])) / self.weeks
 
     def acceptable(self, t: Trade) -> bool:
-        """Adds min_gain for you and is fair enough to them at face value: no worse than
-        trade_fairness, or, when that's below 0, a gain of at least that much for them too."""
-        return t.gain >= self.cfg.trade_min_gain and t.their_face >= -self.cfg.trade_fairness
+        """Worth listing: it adds min_gain to your lineups, you win it at face value (you
+        never give up more than you get, so you're not feeding anyone), and it's fair enough
+        to them at face value, no worse than trade_fairness (infinite: they're not asked)."""
+        return (t.gain >= self.cfg.trade_min_gain and t.face >= 0
+                and t.their_face >= -self.cfg.trade_fairness)
 
 
 def build_trades(snap: Snapshot, cfg: Config) -> TradeReport:
@@ -473,7 +482,7 @@ class Evaluation:
     their_ros_gain: float  # fpts per week it really adds for them, on rest of season values
     days: int
     through: Optional[date]
-    verdict: str  # "good", "even" or "bad", for you
+    verdict: str  # "good", "feeding" (helps your lineup, but you lose the trade), "even" or "bad", for you
     accepts: bool  # whether it looks no worse than the fairness bar to them
     notes: List[str] = field(default_factory=list)  # read-as corrections, untouchables, the best player
     min_gain: float = 0.0
@@ -554,10 +563,12 @@ def find_players(snap: Snapshot, give: Sequence[str], get: Sequence[str]) -> Tup
     return ids[0], ids[1], notes
 
 
-def _verdict(gain: float, min_gain: float) -> str:
+def _verdict(gain: float, min_gain: float, face: float = 0.0) -> str:
+    """good: helps your lineup and you win the trade. feeding: helps your lineup, but you give
+    up more than you get at face value. even, bad: what it does for your lineup."""
     bar = max(min_gain, 0.5)
     if gain >= bar:
-        return "good"
+        return "good" if face >= 0 else "feeding"
     if gain <= -bar:
         return "bad"
     return "even"
@@ -604,16 +615,17 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
     if (best := _best_ask(t)) is not None:
         out.append(f"{best} is the best player in the deal on current form. Managers rarely give that up "
                    "for lesser players, even when the totals look even.")
-    # Whether they'd take it: even or better for them at face value, or within fairness
-    # when that's set to allow bolder offers. Wanting them to gain too is your bar, not theirs.
-    accepts = t.their_face >= -max(cfg.trade_fairness, 0.0)
-    if cfg.trade_fairness < 0 and t.their_face < -cfg.trade_fairness:
-        out.append(f"It helps them {t.their_face:+.1f}/week at face value, under the {-cfg.trade_fairness:+g}/week "
-                   "you want them to get out of it too.")
+    # Whether they'd take it: even or better for them at face value, or within fairness when
+    # that's set to allow bolder offers. Not asking (infinite fairness) doesn't change the answer.
+    slack = cfg.trade_fairness if 0 < cfg.trade_fairness < float("inf") else 0.0
+    accepts = t.their_face >= -slack
+    if t.face < 0:
+        out.append(f"You lose this trade: you give up {-t.face:.1f} fpts/week more than you get at face value. "
+                   "Any gain for you comes from lineup fit, drops and free agent pickups, not the players.")
     days = m.days
     return Evaluation(
         t, their_ros_gain, len(days), snap.period_dates.get(days[-1]) if days else None,
-        _verdict(t.gain, cfg.trade_min_gain), accepts, out,
+        _verdict(t.gain, cfg.trade_min_gain, t.face), accepts, out,
         cfg.trade_min_gain, cfg.trade_fairness,
         alternatives=find_alternatives(m, tid, give, get) if alternatives else [],
         core=[p.name for p in give],

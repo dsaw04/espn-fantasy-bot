@@ -240,13 +240,20 @@ def breakdown(t) -> str:
     return line
 
 
+def bar_text(min_gain: float, fairness: float) -> str:
+    """What a listed trade has to do: help your lineup, not lose you the trade, and, unless
+    you've stopped asking, be fair enough to them."""
+    you = f"adds {min_gain:g}+ fpts/week for you without losing you the trade at face value"
+    if fairness == float("inf"):
+        return you
+    return f"{you}, and {their_bar(fairness)}"
+
+
 def their_bar(fairness: float) -> str:
     """What a trade has to do for the other team at face value, from trade_fairness: above 0 it may be
-    that much worse for them, below 0 it has to help them by that much too."""
+    that much worse for them."""
     if fairness > 0:
         return f"is no more than {fairness:g} fpts/week worse for them at face value"
-    if fairness < 0:
-        return f"adds {-fairness:g}+ fpts/week for them too at face value"
     return "is at least even for them at face value"
 
 
@@ -279,7 +286,7 @@ def render_trades(r: TradeReport) -> str:
             lines.append(_trade_head(i, t))
             lines += [f"   - {breakdown(t)}"] + [f"   - {reason}" for reason in t.reasons]
     else:
-        lines.append(f"- None. No trade adds {r.min_gain:g}+ fpts/week for you and {their_bar(r.fairness)}.")
+        lines.append(f"- None. No trade {bar_text(r.min_gain, r.fairness)}.")
     lines.append("")
 
     if r.sell_high:
@@ -295,6 +302,7 @@ def render_trades(r: TradeReport) -> str:
 
 VERDICTS = {
     "good": "Take it",
+    "feeding": "Careful, you lose this one",
     "even": "About even",
     "bad": "Pass",
 }
@@ -303,7 +311,8 @@ VERDICTS = {
 def evaluation_headline(e: Evaluation) -> str:
     """The verdict in one line: what it does for you, then whether they'd go for it."""
     t = e.trade
-    you = f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you ({t.total:+.0f} over the rest of the season)."
+    you = (f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you with roster moves ({t.total:+.0f} over the "
+           f"rest of the season), {t.face:+.1f}/week at face value.")
     if e.accepts:
         them = f"They should go for it: {t.their_face:+.1f}/week for them at face value ({t.their_gain:+.1f} with roster moves)."
     else:
@@ -370,8 +379,8 @@ def search_subject(s: TradeSearch) -> str:
 def search_none(s: TradeSearch) -> str:
     teams = "team" if s.teams_searched == 1 else "teams"
     where = "" if s.partner else f"Across {s.teams_searched} {teams}, no"
-    return (f"None. {where or 'No'} trade {search_subject(s)} adds {s.min_gain:g}+ "
-            f"fpts/week for you and {their_bar(s.fairness)}.")
+    return (f"None. {where or 'No'} trade {search_subject(s)} "
+            f"{bar_text(s.min_gain, s.fairness)}.")
 
 
 def render_search(s: TradeSearch, notes: Sequence[str] = ()) -> str:
@@ -402,8 +411,8 @@ def alternatives_heading(e: Evaluation) -> str:
 
 
 def no_alternatives(e: Evaluation) -> str:
-    return (f"None. No other 1-for-1, package or spread with {e.trade.team_name} adds {e.min_gain:g}+ fpts/week "
-            f"for you and {their_bar(e.fairness)}.")
+    return (f"None. No other 1-for-1, package or spread with {e.trade.team_name} "
+            f"{bar_text(e.min_gain, e.fairness)}.")
 
 
 def post_to_discord(webhook: str, text: str) -> None:
