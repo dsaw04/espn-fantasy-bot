@@ -724,7 +724,7 @@ def _pick_alternatives(trades: List[Trade]) -> List[Trade]:
 
 @dataclass
 class TradeSearch:
-    """Trades with every team built around players you picked."""
+    """Trades built around players you picked, with one team you picked, or both."""
 
     team_name: str
     core: List[str]  # yours: each trade sends at least one
@@ -735,16 +735,21 @@ class TradeSearch:
     through: Optional[date]
     min_gain: float = 0.0
     fairness: float = 0.0
+    partner: Optional[str] = None  # the one team searched, when you picked it
 
 
-def search_trades(snap: Snapshot, cfg: Config, include_ids: Sequence[int]) -> TradeSearch:
-    """Trades built around the players you pick: yours to send, theirs to get. With only
-    yours, every other team is searched; players of theirs limit it to the teams that have
-    them. Every shape up to ALT_MAX_TOTAL players, scored like every other trade, and only
-    ones that add min_gain for you and look fair enough to them."""
-    if not include_ids:
-        raise TradeInputError("Pick at least one player to build around.")
+def search_trades(snap: Snapshot, cfg: Config, include_ids: Sequence[int] = (),
+                  team_id: Optional[int] = None) -> TradeSearch:
+    """Trades built around the players you pick (yours to send, theirs to get), with the team
+    you pick, or both. With only players of yours, every other team is searched; players of
+    theirs limit it to the teams that have them; a team limits it to that team. Every shape
+    up to ALT_MAX_TOTAL players, scored like every other trade, and only ones that add
+    min_gain for you and look fair enough to them."""
+    if not include_ids and team_id is None:
+        raise TradeInputError("Pick a team to trade with, or at least one player to build around.")
     m = _Market(snap, cfg)
+    if team_id is not None and team_id not in m.teams:
+        raise TradeInputError("That team isn't in the league any more. Refresh and try again.")
     by_id = {p.id: p for p in snap.all_players()}
     mine = {p.id for p in m.me}
     core: List[PlayerView] = []
@@ -758,20 +763,45 @@ def search_trades(snap: Snapshot, cfg: Config, include_ids: Sequence[int]) -> Tr
             core.append(p)
         elif p.owner == "fa":
             errors.append(f"{p.name} is a free agent: pick him up instead of trading for him.")
+        elif team_id is not None and p.team_id != team_id:
+            errors.append(f"{p.name} is on {m.team_name(p.team_id)}, not {m.team_name(team_id)}.")
         elif p.team_id in m.teams:
             targets.append(p)
     if errors:
         raise TradeInputError("\n".join(errors))
-    tids = sorted({p.team_id for p in targets}) if targets else sorted(m.teams)
+    if team_id is not None:
+        tids = [team_id]
+    else:
+        tids = sorted({p.team_id for p in targets}) if targets else sorted(m.teams)
     found: List[Trade] = []
     for tid in tids:
         found += _search_team(m, tid, _deals_around(m, tid, core, targets))
     days = m.days
+    # One team: show its best, not just two. Several: no one manager fills the list.
+    per_team = None if len(tids) == 1 else SEARCH_PER_TEAM
     return TradeSearch(
         snap.my_team_name, [p.name for p in core], [p.name for p in targets],
-        _explain(_pick(found, SEARCH_SHOWN, SEARCH_PER_TEAM), snap), len(tids),
+        _explain(_pick(found, SEARCH_SHOWN, per_team), snap), len(tids),
         len(days), snap.period_dates.get(days[-1]) if days else None, cfg.trade_min_gain, cfg.trade_fairness,
+        m.team_name(team_id) if team_id is not None else None,
     )
+
+
+def find_team(snap: Snapshot, query: str) -> int:
+    """The other team a typed name means: an exact name, else the one whose name contains it,
+    case and spacing ignored."""
+    key = " ".join(query.lower().split())
+    teams = {tid: name for tid, name in snap.team_names.items()
+             if tid in {p.team_id for p in snap.other_rostered}}
+    exact = [tid for tid, name in teams.items() if " ".join(name.lower().split()) == key]
+    if len(exact) == 1:
+        return exact[0]
+    hits = [tid for tid, name in teams.items() if key and key in " ".join(name.lower().split())]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise TradeInputError(f'"{query}" could be {", ".join(teams[t] for t in hits)}. Use more of the name.')
+    raise TradeInputError(f'No other team named "{query}". Teams: {", ".join(sorted(teams.values()))}.')
 
 
 def find_included(snap: Snapshot, names: Sequence[str]) -> Tuple[List[int], List[str]]:

@@ -91,13 +91,14 @@ Every trade of up to `max_players` a side (1-for-1 up to 2-for-2) with every oth
 
 Each trade lists every player's splits (last 7, last 15, season, ESPN projection), both values, injury status, Hashtag's season line as a second opinion, and who each side would drop or pick up. Under the trades, the report lists your biggest sell high candidates and the biggest buy low targets on other teams who'd start for you.
 
-### Build trades around a player
+### Build trades around a player or a team
 
 To shop a player, or go after one, name them: `python -m fantasy_bot --trades --with "Brandon Miller"`. In the app, pick them under *Build around* on *Find trades*.
 
 - **Your players:** trades with every other team that send at least one of them.
 - **Their players:** trades that get you at least one of them, searched only on the teams that have them.
 - **Both:** each trade sends at least one of yours and gets at least one of theirs.
+- **A team:** pick a *Trade partner* (or `--team "Bol Bol"`, part of the name will do) to work out the best deals with that one manager: every trade with them up to 4 players in all, with or without players to build around. Each one helps you by `min_gain`+ fpts a week and still looks at least even to them, so it's something they might actually accept. All 8 can be with that team.
 
 The players you pick can be packaged with any others you'd trade (untouchables only when you pick them), in any shape up to 4 players in all: 1-for-1, 2-for-1, 1-for-2, 2-for-2, 3-for-1 and 1-for-3. Every deal is scored like the rest, and only ones that add `min_gain`+ fpts a week for you and look fair enough to them are listed: the best 8, the best of each shape first, at most 2 with any one team, and no two asking for the same players. *Check this one* opens a trade in *Check a trade* for the full breakdown and alternatives.
 

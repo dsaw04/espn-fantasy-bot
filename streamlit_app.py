@@ -10,6 +10,7 @@ from __future__ import annotations
 import hmac
 import os
 from dataclasses import replace
+from typing import Optional
 from pathlib import Path
 
 import requests
@@ -141,9 +142,10 @@ def trade_report(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple) -> 
     return build_trades(_snap, _cfg)
 
 
-@st.cache_data(ttl=TTL, show_spinner="Searching every team for trades around them...")
-def search(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple, include: tuple) -> TradeSearch:
-    return search_trades(_snap, _cfg, include)
+@st.cache_data(ttl=TTL, show_spinner="Searching for trades...")
+def search(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple, include: tuple,
+           partner: Optional[int]) -> TradeSearch:
+    return search_trades(_snap, _cfg, include, partner)
 
 
 @st.cache_data(ttl=TTL, show_spinner="Scoring the trade and looking for better ones with the same team...")
@@ -521,7 +523,19 @@ def build_around_picker(scout: Snapshot) -> list:
     )
 
 
+def partner_picker(scout: Snapshot) -> Optional[int]:
+    """A team to work out a trade with. None searches every team."""
+    tids = sorted({p.team_id for p in scout.other_rostered}, key=lambda t: scout.team_names.get(t, ""))
+    return st.selectbox(
+        "Trade partner (optional)", [None] + tids, key="partner",
+        format_func=lambda t: "Any team" if t is None else scout.team_names.get(t, f"team {t}"),
+        help="Pick a team to see the best trades with that manager alone: ones that help you and still "
+             "look at least even to them.",
+    )
+
+
 def find_trades(cfg: Config, scout: Snapshot) -> None:
+    partner = partner_picker(scout)
     include = build_around_picker(scout)
     if not st.session_state.get("trades"):
         if not st.button("Find trades", type="primary", width="stretch"):
@@ -530,9 +544,9 @@ def find_trades(cfg: Config, scout: Snapshot) -> None:
         st.session_state.trades = True
         st.rerun()  # without the button
     snap = fetch(trade_data, cfg)
-    if include:
+    if include or partner is not None:
         try:
-            s = search(snap, cfg, snap.now.isoformat(), trade_key(cfg), tuple(include))
+            s = search(snap, cfg, snap.now.isoformat(), trade_key(cfg), tuple(include), partner)
         except TradeInputError as err:
             st.error(str(err))
             return
@@ -571,8 +585,11 @@ def show_search(s: TradeSearch) -> None:
         return
     teams = "team" if s.teams_searched == 1 else "teams"
     through = f" through {s.through:%b} {s.through.day}" if s.through else ""
-    st.caption(f"Best across {s.teams_searched} {teams}, at most {SEARCH_PER_TEAM} with any one. Rest of season: "
-               f"{s.days} days{through}. Each is judged on its own against your roster as it is.")
+    where = (f"Best with {s.partner}, each helping you and looking at least even to them" if s.partner
+             else f"Best across {s.teams_searched} {teams}" + (f", at most {SEARCH_PER_TEAM} with any one"
+                                                               if s.teams_searched > 1 else ""))
+    st.caption(f"{where}. Rest of season: {s.days} days{through}. Each is judged on its own against your "
+               "roster as it is.")
     for i, t in enumerate(s.trades, 1):
         card = trade_card(i, t, title=f"{shape_label(t)} with {t.team_name}")
         card.button("Check this one", key=f"search_{i}", width="stretch", on_click=load_trade,

@@ -1,5 +1,5 @@
 """Run with:  python -m fantasy_bot [--config bot.toml] [--no-post] [--list-teams] [--trades]
-                                  [--give "A, B" --get "C"] [--trades --with "A"]"""
+                                  [--give "A, B" --get "C"] [--trades --with "A"] [--trades --team "B"]"""
 
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ from .report import (
     lineup_lines, lineup_needs_changes, post_to_discord, render, render_evaluation, render_search, render_trades,
 )
 from .scoring import Scorer
-from .trade import TradeInputError, build_trades, evaluate_trade, find_included, find_players, search_trades
+from .trade import (
+    TradeInputError, build_trades, evaluate_trade, find_included, find_players, find_team, search_trades,
+)
 
 
 def add_hashtag_rankings(snap: Snapshot, cfg: Config) -> None:
@@ -81,6 +83,9 @@ def main() -> None:
     ap.add_argument("--with", dest="include", action="append", default=[], metavar="NAMES",
                     help='with --trades: build trades with every team around these players, yours to send or '
                          'theirs to get, comma separated (e.g. --trades --with "Brandon Miller")')
+    ap.add_argument("--team", default="", metavar="NAME",
+                    help='with --trades: the best trades with this team (part of its name will do), '
+                         'e.g. --trades --team "Bol Bol"')
     ap.add_argument("--give", action="append", default=[], metavar="NAMES",
                     help='evaluate a trade: your players to send, comma separated (e.g. --give "Jokic, Herro")')
     ap.add_argument("--get", action="append", default=[], metavar="NAMES",
@@ -107,10 +112,10 @@ def main() -> None:
         evaluate(source, cfg, split_names(args.give), split_names(args.get), post)
         return
 
-    if args.include and not args.trades:
-        sys.exit("--with goes with --trades: python -m fantasy_bot --trades --with \"Brandon Miller\"")
+    if (args.include or args.team) and not args.trades:
+        sys.exit("--with and --team go with --trades: python -m fantasy_bot --trades --team \"Bol Bol\"")
     if args.trades:
-        trade_scout(source, cfg, post, split_names(args.include))
+        trade_scout(source, cfg, post, split_names(args.include), args.team.strip())
         return
 
     snap = scout_snapshot(source, cfg)
@@ -131,14 +136,15 @@ def main() -> None:
             alerts.mark_sent(alert_key(report.lineup))
 
 
-def trade_scout(source, cfg: Config, post: bool, include=()) -> None:
+def trade_scout(source, cfg: Config, post: bool, include=(), team: str = "") -> None:
     """Sell players running hot to the other teams for players off to a slow start. With
-    players to include, the best trades with every team built around them instead."""
+    players to include or a team, the best trades built around them instead."""
     snap = trade_snapshot(source, cfg)
-    if include:
+    if include or team:
         try:
             ids, notes = find_included(snap, include)
-            text = render_search(search_trades(snap, cfg, ids), notes)
+            tid = find_team(snap, team) if team else None
+            text = render_search(search_trades(snap, cfg, ids, tid), notes)
         except TradeInputError as err:
             sys.exit(str(err))
     else:

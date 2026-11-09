@@ -527,3 +527,44 @@ def test_a_free_agent_goes_to_one_side_only():
     t = evaluate_trade(snap, c, [3, 5], [10], alternatives=False).trade
     assert names(t.add) == ["Steady FA"] and names(t.their_add) == ["Free Agent"]
     assert set(names(t.their_drop)) == {"Steady Center", "Bench Guy"}
+
+
+# ---- trades with one team ----------------------------------------------------------------------
+from fantasy_bot.trade import find_team  # noqa: E402
+
+
+def test_finds_the_best_trades_with_one_team():
+    c = cfg(untouchable=["Untouchable Star"])
+    s = search_trades(league(), c, team_id=2)
+    assert s.partner == "Rival" and s.teams_searched == 1 and s.core == s.targets == []
+    assert s.trades and len(s.trades) <= SEARCH_SHOWN
+    for t in s.trades:
+        assert t.team_name == "Rival" and t.gain >= c.trade_min_gain and t.their_gain >= -c.trade_fairness
+        assert "Untouchable Star" not in names(t.give)
+
+
+def test_one_team_with_a_player():
+    s = search_trades(league(), cfg(trade_fairness=500), [1], team_id=3)  # Hot Guard, Other Team
+    assert s.partner == "Other Team" and s.trades
+    assert all(t.team_name == "Other Team" and "Hot Guard" in names(t.give) for t in s.trades)
+    with pytest.raises(TradeInputError, match="Cold Wing is on Rival, not Other Team"):
+        search_trades(league(), cfg(), [10], team_id=3)
+    with pytest.raises(TradeInputError, match="Pick a team"):
+        search_trades(league(), cfg())
+
+
+def test_finds_a_team_by_name():
+    snap = league()
+    assert find_team(snap, "rival") == 2 and find_team(snap, "  OTHER   team ") == 3 and find_team(snap, "other") == 3
+    with pytest.raises(TradeInputError, match="could be"):
+        find_team(snap, "r")  # Rival and Other Team
+    with pytest.raises(TradeInputError, match="No other team"):
+        find_team(snap, "Mine")  # your own
+
+
+def test_render_trades_with_one_team():
+    text = render_search(search_trades(league(), cfg(untouchable=["Untouchable Star"]), team_id=2))
+    assert text.startswith("**Mine: trades with Rival**") and "Best with Rival" in text
+    text = render_search(search_trades(league(), cfg(trade_min_gain=1000), [1], team_id=2))
+    assert "**Mine: trades with Rival sending Hot Guard**" in text
+    assert "None. No trade with Rival sending Hot Guard adds 1000+ fpts/week" in text
