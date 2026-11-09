@@ -55,6 +55,7 @@ LISTED = 5  # sell high and buy low candidates listed
 # Replacement level: the rest of season value per game of this free agent, best first. Not the
 # very best one, since only one manager gets him.
 REPLACEMENT_RANK = 3
+DTD_DAYS = 7  # a day-to-day player with no return date is assumed healthy after this many days
 
 
 @dataclass
@@ -91,6 +92,19 @@ class Trade:
     # lineups with the pickups, less without them. 0 when a side picks nobody up.
     fa_gain: float = 0.0
     their_fa_gain: float = 0.0
+    # Pickups in add / their_add that side would make without the trade too: listed, since
+    # they're part of what you'd really do, but not credited to the trade.
+    anyway: Set[int] = field(default_factory=set)
+    their_anyway: Set[int] = field(default_factory=set)
+
+    @property
+    def new_add(self) -> List[Valued]:
+        """Your pickups the trade brings, not ones you'd make anyway."""
+        return [v for v in self.add if v.player.id not in self.anyway]
+
+    @property
+    def their_new_add(self) -> List[Valued]:
+        return [v for v in self.their_add if v.player.id not in self.their_anyway]
 
 
 @dataclass
@@ -104,6 +118,7 @@ class TradeReport:
     min_gain: float = 0.0
     fairness: float = 0.0
     before: Optional[str] = None  # free agent moves every trade is measured after (_Market.before_note)
+    replacement: float = 0.0  # fpts per game face value counts players over
 
 
 def trade_days(snap: Snapshot) -> List[int]:
@@ -119,9 +134,10 @@ class Lineups:
     plays that day, so scoring a trade only costs the days its players have games."""
 
     def __init__(self, snap: Snapshot, cfg: Config, days: List[int], value: Callable[[PlayerView], float],
-                 unknown_back: Optional[date] = None):
+                 unknown_back: Optional[date] = None, risky_back: Optional[date] = None):
         self.snap, self.cfg, self.days, self.value = snap, cfg, days, value
         self.unknown_back = unknown_back  # when a player out with no return date is assumed back
+        self.risky_back = risky_back  # when a day-to-day player with no return date is assumed healthy
         self.slots = starting_slots(snap.lineup_slots)
         self._worth: Dict[int, Dict[int, float]] = {}
         self._player: Dict[int, PlayerView] = {}
@@ -135,7 +151,8 @@ class Lineups:
             w = {}
             for sp in self.days:
                 if sp in p.games:
-                    x = availability_on(p, self.snap.period_dates.get(sp), self.cfg, self.unknown_back) * v
+                    x = availability_on(p, self.snap.period_dates.get(sp), self.cfg, self.unknown_back,
+                                        self.risky_back) * v
                     if x > 0:
                         w[sp] = x
             self._worth[p.id], self._player[p.id] = w, p
@@ -278,8 +295,9 @@ class _Market:
         self.weeks = max(len(self.days), 1) / 7
         today = snap.period_dates.get(snap.today)
         back = today + timedelta(days=cfg.trade_unknown_return_days) if today else None
-        self.ros_lineups = Lineups(snap, cfg, self.days, self.ros, back)  # how a trade really changes a team
-        self.their_lineups = Lineups(snap, cfg, self.days, self.their, back)  # how it looks to the other team
+        healthy = today + timedelta(days=DTD_DAYS) if today else None
+        self.ros_lineups = Lineups(snap, cfg, self.days, self.ros, back, healthy)  # how a trade really changes a team
+        self.their_lineups = Lineups(snap, cfg, self.days, self.their, back, healthy)  # how it looks to the other team
         self.me = snap.roster_for_moves()
         self.tradeable = droppable(snap, cfg)
         self.safe = {p.id for p in self.me} - {p.id for p in self.tradeable}  # never cut to make room
@@ -396,24 +414,24 @@ class _Market:
 
     def score(self, tid: int, d: _Deal) -> Trade:
         """A deal scored in full, with the best lineup each day, and at face value. Both sides
-        against their rosters after the free agent moves they'd make anyway, and only the drops
-        and pickups the trade itself brings are listed with it."""
-        _, their_dropped, their_added, their_before = self.their_base(tid)
+        against their rosters after the free agent moves they'd make anyway. Every drop and
+        pickup is listed, but only pickups the trade itself brings count toward fa_gain."""
+        _, _, their_added, their_before = self.their_base(tid)
         total = self.ros_lineups.total(d.mine) - self.my_before
         their_gain = (self.their_lineups.total(d.theirs) - their_before) / self.weeks
-        drop = [p for p in d.drop if p.id not in _ids_of(self.base_drop)]
-        add = [p for p in d.add if p.id not in _ids_of(self.base_add)]
-        their_drop = [p for p in d.their_drop if p.id not in their_dropped]
-        their_add = [p for p in d.their_add if p.id not in their_added]
+        anyway = _ids_of(d.add) & _ids_of(self.base_add)
+        their_anyway = _ids_of(d.their_add) & their_added
         v = self.val
         return Trade(
             tid, self.team_name(tid), [v(p) for p in d.give], [v(p) for p in d.get],
-            total / self.weeks, total, their_gain, [v(p) for p in drop], [v(p) for p in add],
-            [v(p) for p in their_drop], [v(p) for p in their_add],
+            total / self.weeks, total, their_gain, [v(p) for p in d.drop], [v(p) for p in d.add],
+            [v(p) for p in d.their_drop], [v(p) for p in d.their_add],
             face=self.my_face(d.give, d.get),
             their_face=self.their_face(d.give, d.get),
-            fa_gain=self._pickups(self.ros_lineups, d.mine, add),
-            their_fa_gain=self._pickups(self.their_lineups, d.theirs, their_add),
+            fa_gain=self._pickups(self.ros_lineups, d.mine, [p for p in d.add if p.id not in anyway]),
+            their_fa_gain=self._pickups(self.their_lineups, d.theirs,
+                                        [p for p in d.their_add if p.id not in their_anyway]),
+            anyway=anyway, their_anyway=their_anyway,
         )
 
     def _pickups(self, lineups: Lineups, roster: List[PlayerView], add: List[PlayerView]) -> float:
@@ -473,6 +491,7 @@ def build_trades(snap: Snapshot, cfg: Config) -> TradeReport:
         min_gain=cfg.trade_min_gain,
         fairness=cfg.trade_fairness,
         before=m.before_note(),
+        replacement=m.replacement,
     )
 
 
@@ -524,17 +543,28 @@ def _names(vs: Sequence[Valued]) -> str:
     return " and ".join(f"{v.player.name} (~{v.ros:.1f}/g)" for v in vs)
 
 
+def _pickups_reason(who: str, adds: Sequence[Valued], anyway: Set[int]) -> List[str]:
+    """who: "you" or "they"."""
+    new = [v for v in adds if v.player.id not in anyway]
+    old = [v for v in adds if v.player.id in anyway]
+    out = []
+    if new:
+        out.append(f"{who}'d pick up free agent {_names(new)}, valued over the rest of the season since he's a streamer")
+    if old:
+        out.append(f"{who}'d pick up free agent {_names(old)}, a pickup {who} could make without the trade too, "
+                   "so the trade isn't credited with it")
+    return out
+
+
 def _reasons(t: Trade, snap: Snapshot) -> List[str]:
     r = [_player_line(v, True, snap.scoring) for v in t.give]
     r += [_player_line(v, False, snap.scoring) for v in t.get]
     if t.drop:
         r.append(f"you'd drop {_names(t.drop)}")
-    if t.add:
-        r.append(f"you'd pick up free agent {_names(t.add)}, valued over the rest of the season since he's a streamer")
+    r += _pickups_reason("you", t.add, t.anyway)
     if t.their_drop:
         r.append(f"they'd drop {' and '.join(v.player.name for v in t.their_drop)}")
-    if t.their_add:
-        r.append(f"they'd pick up free agent {_names(t.their_add)}")
+    r += _pickups_reason("they", t.their_add, t.their_anyway)
     m = snap.matchup
     if m is not None:
         ids = {v.player.id for v in t.get}
@@ -566,6 +596,7 @@ class Evaluation:
     # Other trades with the same team built around the players you chose to send, best first.
     alternatives: List[Trade] = field(default_factory=list)
     core: List[str] = field(default_factory=list)  # the players you chose to send
+    replacement: float = 0.0  # fpts per game face value counts players over
 
 
 def _tokens_match(query: str, name: str) -> bool:
@@ -709,6 +740,7 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
         cfg.trade_min_gain, cfg.trade_fairness,
         alternatives=find_alternatives(m, tid, give, get) if alternatives else [],
         core=[p.name for p in give],
+        replacement=m.replacement,
     )
 
 

@@ -473,7 +473,7 @@ def show_evaluation(e: Evaluation) -> None:
     row.metric("For you", f"{t.face:+.1f}/wk", border=True, help=FACE_HELP)
     row.metric("To them", f"{t.their_face:+.1f}/wk", border=True, help=FACE_HELP)
     through = f" through {e.through:%b} {e.through.day}" if e.through else ""
-    extra = f" {pickups_line(t)}" if t.add or t.their_add else ""
+    extra = f" {pickups_line(t)}" if t.new_add or t.their_new_add else ""
     st.caption(f"{t.total:+.0f} fpts for you over the rest of the season ({e.days} days{through}).{md(extra)}")
     for n in e.notes:
         st.warning(md(n))
@@ -483,7 +483,11 @@ def show_evaluation(e: Evaluation) -> None:
                      ("They drop", t.their_drop), ("They add", t.their_add)):
         for v in vs:
             p = v.player
-            rows.append({"Side": side, "Player": p.name, "Team": who(p), "Now": v.now, "ROS": v.ros,
+            if p.id in (t.anyway if side == "You add" else t.their_anyway if side == "They add" else ()):
+                side_label = f"{side} (no trade needed)"
+            else:
+                side_label = side
+            rows.append({"Side": side_label, "Player": p.name, "Team": who(p), "Now": v.now, "ROS": v.ros,
                          "L7": p.fpts.get("last_7"), "L15": p.fpts.get("last_15"), "Season": p.fpts.get("season"),
                          "Proj": p.fpts.get("projected"),
                          "Status": "" if p.injury_status in ("", "ACTIVE") else p.status_label()})

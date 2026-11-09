@@ -531,9 +531,14 @@ def test_a_free_agent_goes_to_one_side_only():
     d = m.quick_one(2, [snap.my_roster[2], snap.my_roster[4]], [snap.other_rostered[0]])
     assert names_of(d.add) == ["Steady FA"] and names_of(d.their_add) == ["Free Agent"]
     assert set(names_of(d.their_drop)) == {"Steady Center", "Bench Guy"}
-    # You'd swap both scrubs for those free agents without a trade, so the trade doesn't list them.
+    # You'd swap both scrubs for those free agents without a trade: the pickup is listed, since you'd
+    # make it, but marked as one you'd make anyway and not credited to the trade.
     e = evaluate_trade(snap, c, [3, 5], [10], alternatives=False)
-    assert e.trade.add == [] and any(n.startswith("No trade needed: drop Steady Center") for n in e.notes)
+    t = e.trade
+    assert names(t.add) == ["Steady FA"] and t.anyway == {32} and t.new_add == [] and t.fa_gain == 0
+    assert any(n.startswith("No trade needed: drop Steady Center") for n in e.notes)
+    assert any("Steady FA (~18.0/g), a pickup you could make without the trade too" in r for r in t.reasons)
+    assert "of your" not in render_evaluation(e)  # no share of your gain is put down to pickups
 
 
 # ---- trades with one team ----------------------------------------------------------------------
@@ -689,13 +694,15 @@ def test_a_free_agent_you_could_add_anyway_is_no_part_of_any_trade():
     r = build_trades(snap, c)
     assert r.before.startswith("No trade needed: drop Bench Guy (~18.0/g) for Great FA (~30.0/g)")
     assert r.before in render_trades(r)
-    assert r.trades and all("Great FA" not in names(t.add) for t in r.trades)
+    assert r.trades and all(t.fa_gain == 0 and "Great FA" not in names(t.new_add) for t in r.trades)
     # Hot Guard for Cold Wing, against your roster with Great FA already in for Bench Guy.
     t = evaluate_trade(snap, c, [1], [10], alternatives=False).trade
     hot, cold = snap.my_roster[0], snap.other_rostered[0]
     after = [p for p in m.base_me if p.id != hot.id] + [cold]
     assert t.gain == pytest.approx((m.ros_lineups.total(after) - m.my_before) / m.weeks)
-    assert not t.add and not t.drop and t.fa_gain == 0
+    # Both halves of the move are listed, the pickup marked as one you'd make anyway.
+    assert names(t.drop) == ["Bench Guy"] and names(t.add) == ["Great FA"]
+    assert t.new_add == [] and t.fa_gain == 0
 
 
 def test_without_a_better_free_agent_there_is_no_move_before_trading():
@@ -770,3 +777,38 @@ def test_reads_unknown_return_days(tmp_path):
     assert load_config(toml, tmp_path / "none.toml").trade_unknown_return_days == 21
     toml.write_text("[league]\nleague_id = 1\nyear = 2027\nteam_id = 3\n", encoding="utf-8")
     assert load_config(toml, tmp_path / "none.toml").trade_unknown_return_days == 14
+
+
+# ---- day-to-day is a few days, not the rest of the season ------------------------------------------
+from fantasy_bot.scoring import availability_on  # noqa: E402
+from fantasy_bot.trade import DTD_DAYS  # noqa: E402
+
+
+def test_day_to_day_is_discounted_only_until_hes_back():
+    snap, c = league(), cfg()
+    fwd = snap.my_roster[1]  # Steady Forward, 30/g
+    fwd.injury_status = "QUESTIONABLE"
+    assert fwd.is_risky
+    # The daily scout discounts him every day, as before.
+    assert availability_on(fwd, DATES[END], c) == c.dtd_availability
+    # Over the rest of the season: discounted for DTD_DAYS with no date...
+    healthy = DATES[TODAY] + timedelta(days=DTD_DAYS)
+    full = sum(30 for sp in trade_days(snap) if sp in fwd.games)
+    hurt = sum(30 * (1 - c.dtd_availability) for sp in trade_days(snap) if sp in fwd.games and DATES[sp] < healthy)
+    assert _Market(snap, c).season(fwd) == pytest.approx(full - hurt)
+    # ...and only until his return date when he has one.
+    fwd.expected_return = DATES[TODAY + 1]
+    assert _Market(snap, c).season(fwd) == pytest.approx(full)
+
+
+def test_a_day_to_day_starter_is_never_cut_for_a_free_agent():
+    # Steady Forward (30/g) questionable, back tomorrow, and a 25/g free agent. Discounted all season,
+    # he looked like an 18/g player: you'd "drop him without a trade", and whoever got him would cut him.
+    snap, c = league(), cfg(untouchable=["Untouchable Star"])
+    fwd = snap.my_roster[1]
+    fwd.injury_status, fwd.expected_return = "QUESTIONABLE", DATES[TODAY + 1]
+    snap.free_agents.append(steady(38, "Good FA", F, 25, owner="fa"))
+    m = _Market(snap, c)
+    assert "Steady Forward" not in names_of(m.base_drop)
+    t = evaluate_trade(snap, c, [2], [10], alternatives=False).trade  # Steady Forward for Cold Wing
+    assert "Steady Forward" not in names(t.their_drop)

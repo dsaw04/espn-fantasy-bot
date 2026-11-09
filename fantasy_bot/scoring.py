@@ -109,13 +109,20 @@ def is_out_on(p: PlayerView, day: Optional[date], unknown_back: Optional[date] =
     return day < unknown_back
 
 
-def availability_on(p: PlayerView, day: Optional[date], cfg: Config, unknown_back: Optional[date] = None) -> float:
+def availability_on(p: PlayerView, day: Optional[date], cfg: Config, unknown_back: Optional[date] = None,
+                    risky_back: Optional[date] = None) -> float:
+    """unknown_back: see is_out_on. risky_back: the day a day-to-day player with no return
+    date is assumed healthy. Without it he's discounted every day, which is fine over the daily
+    scout's week, but over the rest of the season it makes a nagging hamstring cost him 40% of
+    every game until April. With it, the discount ends at his return date, or else risky_back."""
     if is_out_on(p, day, unknown_back):
         return 0.0
     if p.available_from is not None and day is not None and day < p.available_from:
         return 0.0  # still on waivers
     if p.is_risky:
-        return cfg.dtd_availability
+        if risky_back is None or day is None:
+            return cfg.dtd_availability
+        return cfg.dtd_availability if day < (p.expected_return or risky_back) else 1.0
     return 1.0
 
 

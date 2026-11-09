@@ -222,11 +222,12 @@ def render(r: Report) -> str:
 
 
 def pickups_line(t) -> str:
-    """How much of each side's weekly number comes from the free agents it would pick up."""
+    """How much of each side's weekly number comes from the free agents the trade has it pick
+    up, leaving out pickups it'd make without the trade too."""
     parts = []
-    if t.add:
+    if t.new_add:
         parts.append(f"{t.fa_gain:+.1f} of your {t.gain:+.1f}/week")
-    if t.their_add:
+    if t.their_new_add:
         parts.append(f"{t.their_fa_gain:+.1f} of their {t.their_gain:+.1f}/week")
     return f"Free agent pickups make up {' and '.join(parts)}."
 
@@ -235,7 +236,7 @@ def breakdown(t) -> str:
     """Face value next to the weekly number, and the part free agents make up: a trade that
     only works because of a waiver pickup is a different trade from one that works on talent."""
     line = f"Face value (the players over a free agent pickup): {t.face:+.1f}/week for you, {t.their_face:+.1f}/week to them"
-    if t.add or t.their_add:
+    if t.new_add or t.their_new_add:
         line += f". {pickups_line(t)[:-1]}"
     return line
 
@@ -278,6 +279,9 @@ def render_trades(r: TradeReport) -> str:
         "waivers, count at rest of season value on both sides: a hot week off waivers is a streamer, not a "
         "long-term piece. Face value counts each player over a free agent either manager could pick up, so "
         "waiver-level players are worth about nothing in a trade.",
+        "",
+        f"Replacement level: ~{r.replacement:.1f} fpts/g, the third best free agent on rest of season value. "
+        "Players near it count for little at face value, however many fpts they score.",
         "",
     ]
     if r.before:
@@ -336,7 +340,8 @@ def render_evaluation(e: Evaluation) -> str:
         f"On rest of season values it really adds {e.their_ros_gain:+.1f}/week for them.",
         "",
         f"Per game, you send {sum(v.ros for v in t.give):.1f} rest of season ({sum(v.now for v in t.give):.1f} now) "
-        f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now).",
+        f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now). Face value counts each "
+        f"player over ~{e.replacement:.1f}/g, the third best free agent.",
         "",
         "**Face value vs with roster moves**",
         f"- Face value, the players in the deal alone, each over a free agent pickup, every game counted: "
@@ -345,7 +350,7 @@ def render_evaluation(e: Evaluation) -> str:
         f"- With roster moves, only games that make the best lineup each day, after drops and free agent "
         f"pickups: {t.gain:+.1f}/week for you, {t.their_gain:+.1f}/week to them.",
     ]
-    if t.add or t.their_add:
+    if t.new_add or t.their_new_add:
         lines.append(f"- {pickups_line(t)}")
     if e.notes:
         lines += [""] + [f"- {n}" for n in e.notes]
