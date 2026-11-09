@@ -317,3 +317,75 @@ def test_render_evaluation_is_readable():
     assert text.startswith("**Trade check**: Hot Guard to Rival for Cold Wing")
     assert "fpts/week for you" in text and "on current form it looks" in text and "**Details**" in text
     print(text)
+
+
+# ---- alternatives with the same team ------------------------------------------------------
+from fantasy_bot.trade import _pick_alternatives, shape_label, shape_of  # noqa: E402
+
+
+def test_shapes():
+    assert [shape_of(*n) for n in ((1, 1), (2, 2), (3, 1), (2, 1), (1, 3))] == [
+        "1-for-1", "even", "package", "package", "spread"]
+
+
+def test_a_bad_trade_gets_better_ones_with_the_same_team_around_the_same_player():
+    snap, c = league(), cfg(untouchable=["Untouchable Star"])
+    e = evaluate_trade(snap, c, [1], [14])  # Hot Guard for Rival Bench: bad for you
+    assert e.verdict == "bad" and e.core == ["Hot Guard"]
+    alts = e.alternatives
+    assert alts and len(alts) <= 5
+    deals = {(tuple(names(a.give)), tuple(names(a.get))) for a in alts}
+    assert (("Hot Guard",), ("Cold Wing",)) in deals  # the 1-for-1 that works
+    assert (("Hot Guard",), ("Rival Bench",)) not in deals  # not the trade you asked about
+    for a in alts:
+        assert a.team_name == "Rival" and "Hot Guard" in names(a.give)
+        assert "Untouchable Star" not in names(a.give)  # never packaged in unless you chose him
+        assert a.gain >= c.trade_min_gain and a.their_gain >= -c.trade_fairness
+        assert len(a.give) <= 3 and len(a.get) <= 3 and a.reasons
+    assert len({frozenset(names(a.get)) for a in alts}) == len(alts)  # no two ask for the same players
+    assert [a.gain for a in alts] == sorted((a.gain for a in alts), reverse=True)
+
+
+def test_alternatives_can_be_uneven():
+    # Bolder bars let in packages and spreads, so each shape gets a turn.
+    e = evaluate_trade(league(), cfg(trade_fairness=500, trade_min_gain=-500), [1], [14])
+    assert {shape_of(len(a.give), len(a.get)) for a in e.alternatives} >= {"1-for-1", "package", "spread"}
+
+
+def test_says_none_when_no_alternative_works():
+    e = evaluate_trade(league(), cfg(trade_min_gain=1000), [1], [14])
+    assert e.alternatives == []
+    assert "None. No other 1-for-1, package or spread with Rival adds 1000+ fpts/week" in render_evaluation(e)
+    assert evaluate_trade(league(), cfg(), [1], [10], alternatives=False).alternatives == []
+
+
+def test_picks_the_best_of_each_shape_then_the_rest_without_repeats():
+    snap = league()
+    p = {x.id: x for x in snap.all_players()}
+
+    def alt(give, get, gain):
+        return Trade(2, "Rival", [Valued(p[i], 30, 30) for i in give], [Valued(p[i], 30, p[i].fpts["season"]) for i in get],
+                     gain, gain * 4, 0)
+
+    trades = [
+        alt([1], [10], 9),
+        alt([1, 5], [10], 8.5),  # asks for the same players as the 9
+        alt([1], [10, 12], 8),  # the best spread; Cold Wing leads
+        alt([1], [13, 10], 7.5),  # Cold Wing would lead a third
+        alt([1], [12], 7),
+        alt([1, 2], [11], 5),  # the best package with new players
+        alt([1, 5], [13], 4),
+        alt([1, 2], [12], 3.9),  # same players as the 7
+        alt([1], [14], 1),  # the list is full
+    ]
+    picked = _pick_alternatives(trades)
+    assert [t.gain for t in picked] == [9, 8, 7, 5, 4]
+    assert shape_label(picked[0]) == "1-for-1" and shape_label(trades[1]) == "2-for-1 package"
+    assert shape_label(trades[2]) == "1-for-2, more back"
+
+
+def test_render_lists_the_alternatives():
+    text = render_evaluation(evaluate_trade(league(), cfg(untouchable=["Untouchable Star"]), [1], [14]))
+    assert "**Other trades with Rival** (built around Hot Guard)" in text
+    assert "1-for-1: send **Hot Guard** for **Cold Wing**" in text
+    print(text)

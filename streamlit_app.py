@@ -20,9 +20,12 @@ from fantasy_bot.config import Config, load_config
 from fantasy_bot.model import PlayerView, Snapshot, n_games
 from fantasy_bot.recommend import Report, build_report
 from fantasy_bot.report import (
-    WEAKEST_SHOWN, _hashtag_rank, evaluation_headline, lineup_needs_changes, move_value, render, render_evaluation,
+    WEAKEST_SHOWN, _hashtag_rank, evaluation_headline, lineup_needs_changes, move_value, no_alternatives, render,
+    render_evaluation,
 )
-from fantasy_bot.trade import Evaluation, TradeInputError, TradeReport, build_trades, evaluate_trade, form
+from fantasy_bot.trade import (
+    Evaluation, TradeInputError, TradeReport, build_trades, evaluate_trade, form, shape_label,
+)
 
 ROOT = Path(__file__).parent
 TTL = 15 * 60  # seconds a read from ESPN is reused before the next one
@@ -137,7 +140,7 @@ def trade_report(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple) -> 
     return build_trades(_snap, _cfg)
 
 
-@st.cache_data(ttl=TTL, show_spinner="Scoring the trade...")
+@st.cache_data(ttl=TTL, show_spinner="Scoring the trade and looking for better ones with the same team...")
 def evaluation(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple, give: tuple, get: tuple) -> Evaluation:
     return evaluate_trade(_snap, _cfg, give, get)
 
@@ -344,17 +347,20 @@ def depth_watch(r: Report) -> None:
             st.markdown(f"**{p.name}** · {who(p)} · {p.percent_owned:.0f}% owned  \n{md(basis)}")
 
 
-def trade_card(i: int, t) -> None:
-    with st.container(border=True):
+def trade_card(i: int, t, title: str = ""):
+    """One trade. Returns the card, so a caller can add to it."""
+    card = st.container(border=True)
+    with card:
         give = " and ".join(v.player.name for v in t.give)
         get = " and ".join(v.player.name for v in t.get)
-        st.markdown(f"**{i}. Trade with {t.team_name}**  \nSend **{give}**  \nGet **{get}**")
+        st.markdown(f"**{i}. {title or f'Trade with {t.team_name}'}**  \nSend **{give}**  \nGet **{get}**")
         row = st.container(horizontal=True)
         row.metric("For you", f"{t.gain:+.1f}/wk", border=True)
         row.metric("To them, now", f"{t.their_gain:+.1f}/wk", border=True)
         st.caption(f"{t.total:+.0f} fpts for you over the rest of the season")
         with st.expander("Details"):
             st.markdown("\n".join(f"- {md(x)}" for x in t.reasons))
+    return card
 
 
 def trades(cfg: Config, scout: Snapshot) -> None:
@@ -446,8 +452,29 @@ def show_evaluation(e: Evaluation) -> None:
     })
     with st.expander("Details"):
         st.markdown("\n".join(f"- {md(x)}" for x in t.reasons))
+    alternatives(e)
     with st.expander("Text report"):
         st.code(render_evaluation(e), language=None, wrap_lines=True)
+
+
+def load_trade(tid: int, give: list, get: list) -> None:
+    """Put an alternative into the pickers above. A button callback, since widget values
+    can only be set before the widgets are drawn."""
+    st.session_state.check_give = give
+    st.session_state[f"check_get_{tid}"] = get
+
+
+def alternatives(e: Evaluation) -> None:
+    st.subheader(f"Other trades with {e.trade.team_name}", anchor=False)
+    if not e.alternatives:
+        st.info(no_alternatives(e))
+        return
+    st.caption(f"Built around {' or '.join(e.core)}: 1-for-1s, packages and deals where you get more back, "
+               "each judged on its own against your roster as it is.")
+    for i, a in enumerate(e.alternatives, 1):
+        card = trade_card(i, a, title=shape_label(a))
+        card.button("Check this one", key=f"alt_{i}", width="stretch", on_click=load_trade,
+                    args=(a.team_id, [v.player.id for v in a.give], [v.player.id for v in a.get]))
 
 
 def find_trades(cfg: Config) -> None:

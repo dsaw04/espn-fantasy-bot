@@ -105,6 +105,8 @@ Any number of players a side, so 3-for-1 works: the side that ends up with more 
 
 The trade is scored exactly like the trade scout's: your best lineup each day over the rest of the season on rest of season values. The verdict is **Take it** when it adds `min_gain`+ fpts a week for you, **Pass** when it costs that much, and **About even** in between. It also says whether they'd likely accept (it looks no worse than `fairness` on current form to them), what it really does for them on rest of season values, and warns when you'd send an untouchable or ask for the best player in the deal.
 
+Then it lists up to 5 **other trades with the same team** built around the players you chose to send, so a bad offer turns into one that works: a 1-for-1, a package (2 or 3 of yours, your chosen player plus others, for 1 or 2 of theirs), or a spread (your player for 2 or 3 of theirs). Each one must add `min_gain`+ fpts a week for you and look fair enough to them on current form, scored the same way as above. The best of each shape comes first, then the best of the rest, and no two ask for the same players. Untouchables are only packaged in when you chose to send them. In the app, *Check this one* loads an alternative into the pickers.
+
 ## Setup
 
 ```bash

@@ -10,7 +10,7 @@ from .model import n_games
 from .history import brier
 from .lineup import TodayPlan
 from .recommend import HASHTAG_WINDOWS, Report
-from .trade import Evaluation, TradeReport, form
+from .trade import Evaluation, TradeReport, form, shape_label
 
 
 WEAKEST_SHOWN = 5
@@ -299,7 +299,29 @@ def render_evaluation(e: Evaluation) -> str:
     if e.notes:
         lines += [""] + [f"- {n}" for n in e.notes]
     lines += ["", "**Details**"] + [f"- {r}" for r in t.reasons]
+    lines += ["", alternatives_heading(e)]
+    if e.alternatives:
+        lines.append("Each judged on its own against your roster as it is:")
+        for i, a in enumerate(e.alternatives, 1):
+            give = " and ".join(f"**{v.player.name}**" for v in a.give)
+            get = " and ".join(f"**{v.player.name}**" for v in a.get)
+            lines.append(f"{i}. {shape_label(a)}: send {give} for {get}. ~{a.gain:+.1f} fpts/week for you "
+                         f"({a.total:+.0f} over the rest of the season). On current form they see {a.their_gain:+.1f}/week.")
+            lines += [f"   - {r}" for r in a.reasons]
+    else:
+        lines.append(f"- {no_alternatives(e)}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def alternatives_heading(e: Evaluation) -> str:
+    core = " or ".join(e.core) if len(e.core) <= 2 else ", ".join(e.core[:-1]) + f" or {e.core[-1]}"
+    return f"**Other trades with {e.trade.team_name}** (built around {core})"
+
+
+def no_alternatives(e: Evaluation) -> str:
+    even = "looks even" if e.fairness <= 0 else f"looks no more than {e.fairness:g} fpts/week worse"
+    return (f"None. No other 1-for-1, package or spread with {e.trade.team_name} adds {e.min_gain:g}+ fpts/week "
+            f"for you and {even} to them on current form.")
 
 
 def post_to_discord(webhook: str, text: str) -> None:

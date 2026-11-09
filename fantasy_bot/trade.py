@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from difflib import SequenceMatcher, get_close_matches
 from itertools import combinations
-from typing import Callable, Dict, FrozenSet, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 from .config import Config
 from .lineup import assign, starting_slots
@@ -100,6 +100,7 @@ class Lineups:
         self.slots = starting_slots(snap.lineup_slots)
         self._worth: Dict[int, Dict[int, float]] = {}
         self._player: Dict[int, PlayerView] = {}
+        self._solo: Dict[int, float] = {}
         self._day: Dict[Tuple[int, FrozenSet[int]], float] = {}
 
     def worth(self, p: PlayerView) -> Dict[int, float]:
@@ -117,7 +118,9 @@ class Lineups:
 
     def solo(self, p: PlayerView) -> float:
         """Every game he plays, as if he always started."""
-        return sum(self.worth(p).values())
+        if p.id not in self._solo:
+            self._solo[p.id] = sum(self.worth(p).values())
+        return self._solo[p.id]
 
     def total(self, roster: Sequence[PlayerView]) -> float:
         by_day: Dict[int, List[int]] = {}
@@ -182,61 +185,109 @@ def _distinct(t: Trade, chosen: List[Trade]) -> bool:
     return True
 
 
+@dataclass
+class _Deal:
+    """A trade after the quick pass, with both rosters already put back to size."""
+
+    ours: float  # quick estimate of fpts per week for you, every game counted as a start
+    give: tuple
+    get: tuple
+    mine: List[PlayerView]
+    drop: List[PlayerView]
+    add: List[PlayerView]
+    theirs: List[PlayerView]
+    their_drop: List[PlayerView]
+    their_add: List[PlayerView]
+
+
+class _Market:
+    """What every trade is scored with: both values for each player, best lineups on each,
+    your roster and the free agents either side would fill an open spot with."""
+
+    def __init__(self, snap: Snapshot, cfg: Config):
+        self.snap, self.cfg = snap, cfg
+        self.scorer = Scorer(snap, cfg)
+        self._ros: Dict[int, float] = {}
+        self.days = trade_days(snap)
+        self.weeks = max(len(self.days), 1) / 7
+        self.ros_lineups = Lineups(snap, cfg, self.days, self.ros)  # how a trade really changes a team
+        self.now_lineups = Lineups(snap, cfg, self.days, self.now)  # how it looks to the other team
+        self.me = snap.roster_for_moves()
+        self.tradeable = droppable(snap, cfg)
+        self.safe = {p.id for p in self.me} - {p.id for p in self.tradeable}  # never cut to make room
+        fas = [p for p in snap.free_agents if not p.is_out]
+        self.fa_ros = sorted(fas, key=self.ros, reverse=True)
+        self.fa_now = sorted(fas, key=self.now, reverse=True)
+        self.teams: Dict[int, List[PlayerView]] = {}
+        for p in snap.other_rostered:
+            self.teams.setdefault(p.team_id, []).append(p)
+        self.my_before = self.ros_lineups.total(self.me)
+        self.my_solo = sum(self.ros_lineups.solo(p) for p in self.me)
+        self._their_before: Dict[int, float] = {}
+
+    def now(self, p: PlayerView) -> float:
+        return self.scorer.base(p)
+
+    def ros(self, p: PlayerView) -> float:
+        if p.id not in self._ros:
+            self._ros[p.id] = per_game_value(p, self.cfg, self.snap.scoring, self.cfg.trade_weights,
+                                             self.cfg.trade_projection_games, ROS_HASHTAG)
+        return self._ros[p.id]
+
+    def val(self, p: PlayerView) -> Valued:
+        return Valued(p, self.now(p), self.ros(p))
+
+    def team_name(self, tid: int) -> str:
+        return self.snap.team_names.get(tid, f"team {tid}")
+
+    def quick(self, tid: int, deals: Iterable[Tuple[tuple, tuple]]) -> List[_Deal]:
+        """Every deal that helps you on a quick estimate, which counts every game as a start,
+        and that may look fair enough to them. The full scoring is too slow for every deal."""
+        their_solo = sum(self.now_lineups.solo(p) for p in self.teams[tid])
+        out = []
+        for give, get in deals:
+            d = self.quick_one(tid, give, get)
+            d.ours = (sum(self.ros_lineups.solo(p) for p in d.mine) - self.my_solo) / self.weeks
+            theirs_quick = (sum(self.now_lineups.solo(p) for p in d.theirs) - their_solo) / self.weeks
+            if d.ours > 0 and theirs_quick >= -self.cfg.trade_fairness - SHORTLIST_SLACK:
+                out.append(d)
+        return out
+
+    def quick_one(self, tid: int, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> _Deal:
+        """One deal put back to size on both sides, ready to score, whatever the quick estimate."""
+        mine, drop, add = _swap(self.me, give, get, self.safe, self.ros, self.fa_ros)
+        theirs, tdrop, tadd = _swap(self.teams[tid], get, give, set(), self.now, self.fa_now)
+        return _Deal(0.0, tuple(give), tuple(get), mine, drop, add, theirs, tdrop, tadd)
+
+    def score(self, tid: int, d: _Deal) -> Trade:
+        """A deal scored in full, with the best lineup each day."""
+        if tid not in self._their_before:
+            self._their_before[tid] = self.now_lineups.total(self.teams[tid])
+        total = self.ros_lineups.total(d.mine) - self.my_before
+        their_gain = (self.now_lineups.total(d.theirs) - self._their_before[tid]) / self.weeks
+        v = self.val
+        return Trade(
+            tid, self.team_name(tid), [v(p) for p in d.give], [v(p) for p in d.get],
+            total / self.weeks, total, their_gain, [v(p) for p in d.drop], [v(p) for p in d.add],
+            [v(p) for p in d.their_drop], [v(p) for p in d.their_add],
+        )
+
+    def acceptable(self, t: Trade) -> bool:
+        """Adds min_gain for you and looks fair enough to them on current form."""
+        return t.gain >= self.cfg.trade_min_gain and t.their_gain >= -self.cfg.trade_fairness
+
+
 def build_trades(snap: Snapshot, cfg: Config) -> TradeReport:
-    scorer = Scorer(snap, cfg)
-    ros_of: Dict[int, float] = {}
+    m = _Market(snap, cfg)
+    ros, val, me, tradeable, days = m.ros, m.val, m.me, m.tradeable, m.days
 
-    def ros(p: PlayerView) -> float:
-        if p.id not in ros_of:
-            ros_of[p.id] = per_game_value(p, cfg, snap.scoring, cfg.trade_weights, cfg.trade_projection_games, ROS_HASHTAG)
-        return ros_of[p.id]
-
-    def val(p: PlayerView) -> Valued:
-        return Valued(p, scorer.base(p), ros(p))
-
-    days = trade_days(snap)
-    weeks = len(days) / 7
-    mine_ros = Lineups(snap, cfg, days, ros)  # how a trade really changes your team
-    theirs_now = Lineups(snap, cfg, days, scorer.base)  # how it looks to them
-
-    me = snap.roster_for_moves()
-    tradeable = droppable(snap, cfg)
-    safe = {p.id for p in me} - {p.id for p in tradeable}
-    fas = [p for p in snap.free_agents if not p.is_out]
-    fa_ros = sorted(fas, key=ros, reverse=True)
-    fa_now = sorted(fas, key=scorer.base, reverse=True)
-    teams: Dict[int, List[PlayerView]] = {}
-    for p in snap.other_rostered:
-        teams.setdefault(p.team_id, []).append(p)
-
-    my_before = mine_ros.total(me)
-    my_solo = sum(mine_ros.solo(p) for p in me)
     found: List[Trade] = []
-    for tid, roster in teams.items():
-        their_before = theirs_now.total(roster)
-        their_solo = sum(theirs_now.solo(p) for p in roster)
-        # A quick pass counts every game as a start, to pick which trades to score in full.
-        quick = []
-        for give, get in _deals(tradeable, roster, cfg.trade_max_players):
-            if max(map(scorer.base, get)) > max(map(scorer.base, give)):
-                continue  # managers rarely give up the best player in a deal for lesser ones
-            mine, drop, add = _swap(me, give, get, safe, ros, fa_ros)
-            theirs, tdrop, tadd = _swap(roster, get, give, set(), scorer.base, fa_now)
-            ours = (sum(mine_ros.solo(p) for p in mine) - my_solo) / weeks
-            theirs_quick = (sum(theirs_now.solo(p) for p in theirs) - their_solo) / weeks
-            if ours > 0 and theirs_quick >= -cfg.trade_fairness - SHORTLIST_SLACK:
-                quick.append((ours, give, get, mine, drop, add, theirs, tdrop, tadd))
-        quick.sort(key=lambda q: q[0], reverse=True)
-        for _, give, get, mine, drop, add, theirs, tdrop, tadd in quick[:SHORTLIST]:
-            total = mine_ros.total(mine) - my_before
-            gain = total / weeks
-            their_gain = (theirs_now.total(theirs) - their_before) / weeks
-            if gain >= cfg.trade_min_gain and their_gain >= -cfg.trade_fairness:
-                found.append(Trade(
-                    tid, snap.team_names.get(tid, f"team {tid}"), [val(p) for p in give], [val(p) for p in get],
-                    gain, total, their_gain, [val(p) for p in drop], [val(p) for p in add],
-                    [val(p) for p in tdrop], [val(p) for p in tadd],
-                ))
+    for tid, roster in m.teams.items():
+        # Managers rarely give up the best player in a deal for lesser ones.
+        deals = ((give, get) for give, get in _deals(tradeable, roster, cfg.trade_max_players)
+                 if max(map(m.now, get)) <= max(map(m.now, give)))
+        quick = sorted(m.quick(tid, deals), key=lambda d: d.ours, reverse=True)
+        found += [t for t in (m.score(tid, d) for d in quick[:SHORTLIST]) if m.acceptable(t)]
 
     # Best for you first; on a tie, the one that looks better to them.
     found.sort(key=lambda t: (round(t.gain, 1), t.their_gain), reverse=True)
@@ -354,6 +405,9 @@ class Evaluation:
     notes: List[str] = field(default_factory=list)  # read-as corrections, untouchables, the best player
     min_gain: float = 0.0
     fairness: float = 0.0
+    # Other trades with the same team built around the players you chose to send, best first.
+    alternatives: List[Trade] = field(default_factory=list)
+    core: List[str] = field(default_factory=list)  # the players you chose to send
 
 
 def _tokens_match(query: str, name: str) -> bool:
@@ -437,12 +491,13 @@ def _verdict(gain: float, min_gain: float) -> str:
 
 
 def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids: Sequence[int],
-                   notes: Sequence[str] = ()) -> Evaluation:
+                   notes: Sequence[str] = (), alternatives: bool = True) -> Evaluation:
     """Score a trade you name the way the trade scout scores the ones it finds: your best
     lineups over the rest of the season on rest of season values, theirs on now values (how
     it looks to them) and on rest of season values (what it really does for them). Any
     number of players a side: the side that ends up with more drops its weakest, the side
-    with fewer picks up the best free agents."""
+    with fewer picks up the best free agents. Then, unless alternatives is False, the best
+    other trades with the same team built around the players you chose to send."""
     if not give_ids or not get_ids:
         raise TradeInputError("Name at least one player on each side.")
     me = snap.roster_for_moves()
@@ -459,50 +514,121 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
     if any(p.id in mine_ids or p.owner == "fa" for p in get) or len(teams) != 1:
         raise TradeInputError("Everyone you get has to come from the same other team.")
     tid = teams.pop()
-    roster = [p for p in snap.other_rostered if p.team_id == tid]
 
-    scorer = Scorer(snap, cfg)
-    ros_of: Dict[int, float] = {}
-
-    def ros(p: PlayerView) -> float:
-        if p.id not in ros_of:
-            ros_of[p.id] = per_game_value(p, cfg, snap.scoring, cfg.trade_weights, cfg.trade_projection_games, ROS_HASHTAG)
-        return ros_of[p.id]
-
-    def val(p: PlayerView) -> Valued:
-        return Valued(p, scorer.base(p), ros(p))
-
-    days = trade_days(snap)
-    weeks = max(len(days), 1) / 7
-    fas = [p for p in snap.free_agents if not p.is_out]
-    # Making room never cuts an untouchable; you can still choose to send one.
-    safe = mine_ids - {p.id for p in droppable(snap, cfg)}
-
-    mine_after, drop, add = _swap(me, give, get, safe, ros, sorted(fas, key=ros, reverse=True))
-    theirs_now, tdrop, tadd = _swap(roster, get, give, set(), scorer.base, sorted(fas, key=scorer.base, reverse=True))
-    theirs_ros, _, _ = _swap(roster, get, give, set(), ros, sorted(fas, key=ros, reverse=True))
-
-    ros_l = Lineups(snap, cfg, days, ros)
-    now_l = Lineups(snap, cfg, days, scorer.base)
-    total = ros_l.total(mine_after) - ros_l.total(me)
-    their_gain = (now_l.total(theirs_now) - now_l.total(roster)) / weeks
-    their_ros_gain = (ros_l.total(theirs_ros) - ros_l.total(roster)) / weeks
-
-    t = Trade(tid, snap.team_names.get(tid, f"team {tid}"), [val(p) for p in give], [val(p) for p in get],
-              total / weeks, total, their_gain, [val(p) for p in drop], [val(p) for p in add],
-              [val(p) for p in tdrop], [val(p) for p in tadd])
+    m = _Market(snap, cfg)
+    roster = m.teams[tid]
+    t = m.score(tid, m.quick_one(tid, give, get))
+    # What it really does for them: their side on rest of season values.
+    theirs_ros, _, _ = _swap(roster, get, give, set(), m.ros, m.fa_ros)
+    their_ros_gain = (m.ros_lineups.total(theirs_ros) - m.ros_lineups.total(roster)) / m.weeks
     t.reasons = _reasons(t, snap)
 
     out = list(notes)
-    sent = [p.name for p in give if p.id in safe]
+    sent = [p.name for p in give if p.id in m.safe]  # untouchable: never cut to make room, but you chose to send him
     if sent:
         out.append(f"You've marked {' and '.join(sent)} untouchable.")
-    if max(v.now for v in t.get) > max(v.now for v in t.give):
-        best = max(t.get, key=lambda v: v.now).player.name
+    if (best := _best_ask(t)) is not None:
         out.append(f"{best} is the best player in the deal on current form. Managers rarely give that up "
                    "for lesser players, even when the totals look even.")
+    days = m.days
     return Evaluation(
         t, their_ros_gain, len(days), snap.period_dates.get(days[-1]) if days else None,
-        _verdict(t.gain, cfg.trade_min_gain), their_gain >= -cfg.trade_fairness, out,
+        _verdict(t.gain, cfg.trade_min_gain), t.their_gain >= -cfg.trade_fairness, out,
         cfg.trade_min_gain, cfg.trade_fairness,
+        alternatives=find_alternatives(m, tid, give, get) if alternatives else [],
+        core=[p.name for p in give],
     )
+
+
+def _best_ask(t: Trade) -> Optional[str]:
+    """The player you'd get when he's the best in the deal on current form, else None."""
+    if max(v.now for v in t.get) > max(v.now for v in t.give):
+        return max(t.get, key=lambda v: v.now).player.name
+    return None
+
+
+# ---- alternatives with the same team -------------------------------------------------
+
+ALT_MAX_PLAYERS = 3  # most players a side in an alternative
+ALT_SHORTLIST = 25  # deals of each shape scored in full, picked on the quick estimate
+ALTERNATIVES = 5  # alternatives shown
+SHAPES = ("1-for-1", "even", "package", "spread")
+
+
+def shape_of(n_give: int, n_get: int) -> str:
+    """1-for-1; even (2-for-2, 3-for-3); package (you send more); spread (you get more back)."""
+    if n_give == n_get:
+        return "1-for-1" if n_give == 1 else "even"
+    return "package" if n_give > n_get else "spread"
+
+
+def shape_label(t: Trade) -> str:
+    n, k = len(t.give), len(t.get)
+    tail = {"1-for-1": "", "even": " swap", "package": " package", "spread": ", more back"}[shape_of(n, k)]
+    return f"{n}-for-{k}{tail}"
+
+
+def _alt_deals(m: _Market, tid: int, core: Sequence[PlayerView], skip: Tuple[FrozenSet[int], FrozenSet[int]]):
+    """Every deal with the team built around at least one of the players you chose to send,
+    packaged with any others you'd trade (never an untouchable you didn't choose), for any
+    1 to ALT_MAX_PLAYERS of theirs. Leaves out the trade you asked about."""
+    core_ids = {p.id for p in core}
+    others = [p for p in m.tradeable if p.id not in core_ids]
+    gets = [g for k in range(1, ALT_MAX_PLAYERS + 1) for g in combinations(m.teams[tid], k)]
+    for n in range(1, min(len(core), ALT_MAX_PLAYERS) + 1):
+        for c in combinations(core, n):
+            for e in range(ALT_MAX_PLAYERS - n + 1):
+                for extra in combinations(others, e):
+                    give = c + extra
+                    give_ids = frozenset(p.id for p in give)
+                    for get in gets:
+                        if (give_ids, frozenset(p.id for p in get)) != skip:
+                            yield give, get
+
+
+def find_alternatives(m: _Market, tid: int, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> List[Trade]:
+    """Other trades with the same team built around the players you chose to send: a 1-for-1,
+    a package of yours for one of theirs, one of yours for two or three of theirs. Only ones
+    that add min_gain for you and look fair enough to them on current form, scored the same
+    way as the trade you asked about. The best of each shape first, then the best of the rest,
+    so a list isn't five versions of the same deal."""
+    skip = (frozenset(p.id for p in give), frozenset(p.id for p in get))
+    quick = sorted(m.quick(tid, _alt_deals(m, tid, give, skip)), key=lambda d: d.ours, reverse=True)
+    by_shape: Dict[str, List[_Deal]] = {}
+    for d in quick:
+        bucket = by_shape.setdefault(shape_of(len(d.give), len(d.get)), [])
+        if len(bucket) < ALT_SHORTLIST:
+            bucket.append(d)
+    ok = [t for t in (m.score(tid, d) for b in by_shape.values() for d in b) if m.acceptable(t)]
+    picked = _pick_alternatives(ok)
+    for t in picked:
+        t.reasons = _reasons(t, m.snap)
+        if (best := _best_ask(t)) is not None:
+            t.reasons.append(f"{best} is the best player in the deal on current form, so expect pushback")
+    return picked
+
+
+def _pick_alternatives(trades: List[Trade]) -> List[Trade]:
+    """Up to ALTERNATIVES, best for you first: the best of each shape, then the best of the
+    rest. No two ask for the same players, and no player of theirs leads more than two."""
+    order = sorted(trades, key=lambda t: (round(t.gain, 1), t.their_gain), reverse=True)
+
+    def lead(t: Trade) -> int:
+        return max(t.get, key=lambda v: v.ros).player.id
+
+    picked: List[Trade] = []
+
+    def fits(t: Trade) -> bool:
+        return (all(_ids(t.get) != _ids(c.get) for c in picked)
+                and sum(lead(c) == lead(t) for c in picked) < 2)
+
+    for s in SHAPES:
+        t = next((t for t in order if shape_of(len(t.give), len(t.get)) == s and fits(t)), None)
+        if t is not None:
+            picked.append(t)
+    for t in order:
+        if len(picked) >= ALTERNATIVES:
+            break
+        if all(t is not c for c in picked) and fits(t):
+            picked.append(t)
+    return sorted(picked, key=lambda t: (round(t.gain, 1), t.their_gain), reverse=True)
