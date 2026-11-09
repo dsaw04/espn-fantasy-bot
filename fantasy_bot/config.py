@@ -62,7 +62,10 @@ class Config:
     # Trade scout (--trades): sells players running hot for players off to a slow start.
     trade_max_players: int = 2  # most players a side
     trade_min_gain: float = 3.0  # fpts per week a trade must add for you over the rest of the season
-    trade_fairness: float = 0.0  # fpts per week a trade may look worse to the other team on current form
+    trade_fairness: float = 0.0  # fpts per week a trade may look worse to the other team
+    # How the other manager values his players: this share recent form ("now"), the rest rest
+    # of season. Free agents always count at rest of season value: a streamer, not a keeper.
+    trade_their_recent: float = 0.5
     trades_shown: int = 5
     trade_weights: Weights = field(default_factory=trade_weights)
     trade_projection_games: int = 20  # ESPN's projection counts as this many games in the rest of season value
@@ -126,6 +129,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         trade_max_players=int(trade.get("max_players", 2)),
         trade_min_gain=float(trade.get("min_gain", 3.0)),
         trade_fairness=float(trade.get("fairness", 0.0)),
+        trade_their_recent=min(1.0, max(0.0, float(trade.get("their_recent", 0.5)))),
         trades_shown=int(trade.get("shown", 5)),
         trade_weights=Weights(**{**vars(trade_weights()), **{k: float(v) for k, v in trade.get("weights", {}).items()}}),
         trade_projection_games=int(trade.get("projection_games", 20)),

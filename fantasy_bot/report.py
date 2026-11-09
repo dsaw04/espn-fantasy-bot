@@ -226,7 +226,7 @@ def _trade_head(i: int, t) -> str:
     get = " and ".join(f"**{v.player.name}**" for v in t.get)
     return (
         f"{i}. Send {give} to **{t.team_name}** for {get}. ~{t.gain:+.1f} fpts/week for you "
-        f"({t.total:+.0f} over the rest of the season). On current form they see {t.their_gain:+.1f}/week."
+        f"({t.total:+.0f} over the rest of the season). To them it looks {t.their_gain:+.1f}/week."
     )
 
 
@@ -237,7 +237,9 @@ def render_trades(r: TradeReport) -> str:
         "",
         "Each player has two values: *now* is the daily scout's, recent form first, which is what other "
         "managers go by. *Rest of season* leans on his season and ESPN's projection. Trades are scored with "
-        "your best lineup each day: rest of season values for you, now values for them.",
+        "your best lineup each day: rest of season values for you; for them, a blend of now and rest of "
+        "season, since managers go by recent form but plan ahead too. Free agents count at rest of season "
+        "value on both sides: a hot week off waivers is a streamer, not a long-term piece.",
         "",
         "**Top trades**",
     ]
@@ -249,7 +251,7 @@ def render_trades(r: TradeReport) -> str:
             lines += [f"   - {reason}" for reason in t.reasons]
     else:
         even = "looks even" if r.fairness <= 0 else f"looks no more than {r.fairness:g} fpts/week worse"
-        lines.append(f"- None. No trade adds {r.min_gain:g}+ fpts/week for you and {even} to the other team on current form.")
+        lines.append(f"- None. No trade adds {r.min_gain:g}+ fpts/week for you and {even} to the other team.")
     lines.append("")
 
     if r.sell_high:
@@ -275,9 +277,9 @@ def evaluation_headline(e: Evaluation) -> str:
     t = e.trade
     you = f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you ({t.total:+.0f} over the rest of the season)."
     if e.accepts:
-        them = f"They should go for it: on current form it looks {t.their_gain:+.1f}/week to them."
+        them = f"They should go for it: it looks {t.their_gain:+.1f}/week to them."
     else:
-        them = f"They'd likely say no: on current form it looks {t.their_gain:+.1f}/week to them."
+        them = f"They'd likely say no: it looks {t.their_gain:+.1f}/week to them."
     return f"{you} {them}"
 
 
@@ -306,7 +308,7 @@ def render_evaluation(e: Evaluation) -> str:
             give = " and ".join(f"**{v.player.name}**" for v in a.give)
             get = " and ".join(f"**{v.player.name}**" for v in a.get)
             lines.append(f"{i}. {shape_label(a)}: send {give} for {get}. ~{a.gain:+.1f} fpts/week for you "
-                         f"({a.total:+.0f} over the rest of the season). On current form they see {a.their_gain:+.1f}/week.")
+                         f"({a.total:+.0f} over the rest of the season). To them it looks {a.their_gain:+.1f}/week.")
             lines += [f"   - {r}" for r in a.reasons]
     else:
         lines.append(f"- {no_alternatives(e)}")
@@ -321,7 +323,7 @@ def alternatives_heading(e: Evaluation) -> str:
 def no_alternatives(e: Evaluation) -> str:
     even = "looks even" if e.fairness <= 0 else f"looks no more than {e.fairness:g} fpts/week worse"
     return (f"None. No other 1-for-1, package or spread with {e.trade.team_name} adds {e.min_gain:g}+ fpts/week "
-            f"for you and {even} to them on current form.")
+            f"for you and {even} to them.")
 
 
 def post_to_discord(webhook: str, text: str) -> None:

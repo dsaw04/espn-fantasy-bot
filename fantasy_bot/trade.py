@@ -13,9 +13,12 @@ Now above rest of season is a player to sell high; below it, one to buy low.
 
 Every trade of up to trade_max_players a side with each other team is scored the way the
 daily scout scores moves: by the best lineup each day, here over the rest of the season.
-Your side uses rest of season values. Their side uses now values, since that's how the
-trade looks to them. A side that ends up with more players drops its weakest, and one with
-fewer picks up the best free agent. The top trades add the most to your fpts per week while
+Your side uses rest of season values. Their side blends now and rest of season values
+(trade_their_recent), since managers go by recent form but plan for the long run too. Free
+agents count at rest of season value on both sides: a hot week off waivers makes a streamer,
+not a long-term piece. A side that ends up with more players drops its weakest, one with
+fewer picks up the best free agent, and either side cuts a player it just got when a free
+agent is better. The top trades add the most to your fpts per week while
 looking at least even to the other team, and where the best player in the deal on current
 form goes to them: two good players for one great one looks even on paper, but managers
 rarely take it.
@@ -63,7 +66,7 @@ class Trade:
     get: List[Valued]
     gain: float  # fpts per week your best lineups add over the rest of the season, on rest of season values
     total: float  # the same over the whole rest of the season
-    their_gain: float  # fpts per week their best lineups add, on now values
+    their_gain: float  # fpts per week their best lineups add, the way they'd value it (_Market.their)
     drop: List[Valued] = field(default_factory=list)  # who you'd drop to make room
     add: List[Valued] = field(default_factory=list)  # free agents you'd pick up with open spots
     their_drop: List[Valued] = field(default_factory=list)
@@ -151,23 +154,36 @@ def _deals(mine: List[PlayerView], theirs: List[PlayerView], most: int) -> Itera
 
 def _swap(roster: List[PlayerView], out: Sequence[PlayerView], into: Sequence[PlayerView], keep: Set[int],
           value: Callable[[PlayerView], float], pool: List[PlayerView]):
-    """The roster after a trade, back to its size: an extra player means dropping the lowest
-    per game value (never anyone in keep or just traded for), an open spot goes to the best
-    free agent in pool. Per game, not this week, so an injured regular isn't the one cut.
+    """The roster after a trade, back to its size. Per game values, not this week's, so an
+    injured regular isn't the one cut.
+
+    - An extra player means dropping the lowest per game value, never anyone in keep. A
+      player just traded for can be the one cut, as any manager would cut him.
+    - An open spot goes to the best free agent in pool (sorted best first).
+    - Then a player just traded for who's worth less than the best free agent left is cut
+      for him. So getting an extra player in a deal never leaves a side worse off than the
+      open spot would have.
+
     Returns (roster, dropped, added)."""
     gone = {p.id for p in out}
     after = [p for p in roster if p.id not in gone] + list(into)
     drop: List[PlayerView] = []
     add: List[PlayerView] = []
     if len(after) > len(roster):
-        keep = keep | {p.id for p in into}
         drop = sorted((p for p in after if p.id not in keep), key=value)[: len(after) - len(roster)]
-        cut = {p.id for p in drop}
-        after = [p for p in after if p.id not in cut]
     elif len(after) < len(roster):
-        add = pool[: len(roster) - len(after)]
-        after += add
-    return after, drop, add
+        add = list(pool[: len(roster) - len(after)])
+    cut = {p.id for p in drop}
+    left = iter(pool[len(add):])
+    best = next(left, None)
+    for p in sorted((p for p in into if p.id not in cut), key=value):
+        if best is None or value(best) <= value(p):
+            break
+        drop.append(p)
+        cut.add(p.id)
+        add.append(best)
+        best = next(left, None)
+    return [p for p in after if p.id not in cut] + add, drop, add
 
 
 def _ids(vs: Sequence[Valued]) -> Set[int]:
@@ -211,13 +227,13 @@ class _Market:
         self.days = trade_days(snap)
         self.weeks = max(len(self.days), 1) / 7
         self.ros_lineups = Lineups(snap, cfg, self.days, self.ros)  # how a trade really changes a team
-        self.now_lineups = Lineups(snap, cfg, self.days, self.now)  # how it looks to the other team
+        self.their_lineups = Lineups(snap, cfg, self.days, self.their)  # how it looks to the other team
         self.me = snap.roster_for_moves()
         self.tradeable = droppable(snap, cfg)
         self.safe = {p.id for p in self.me} - {p.id for p in self.tradeable}  # never cut to make room
-        fas = [p for p in snap.free_agents if not p.is_out]
-        self.fa_ros = sorted(fas, key=self.ros, reverse=True)
-        self.fa_now = sorted(fas, key=self.now, reverse=True)
+        # Either side fills an open spot with the best free agent over the rest of the season,
+        # not the one on a hot week: he's a streamer, not a long-term piece.
+        self.fa_ros = sorted((p for p in snap.free_agents if not p.is_out), key=self.ros, reverse=True)
         self.teams: Dict[int, List[PlayerView]] = {}
         for p in snap.other_rostered:
             self.teams.setdefault(p.team_id, []).append(p)
@@ -234,6 +250,15 @@ class _Market:
                                              self.cfg.trade_projection_games, ROS_HASHTAG)
         return self._ros[p.id]
 
+    def their(self, p: PlayerView) -> float:
+        """How the other manager values a player: partly recent form, which is what managers
+        go by, partly rest of season, since they plan for the long run too. Free agents at
+        rest of season value, the same as on your side."""
+        if p.owner == "fa":
+            return self.ros(p)
+        w = self.cfg.trade_their_recent
+        return w * self.now(p) + (1 - w) * self.ros(p)
+
     def val(self, p: PlayerView) -> Valued:
         return Valued(p, self.now(p), self.ros(p))
 
@@ -243,12 +268,12 @@ class _Market:
     def quick(self, tid: int, deals: Iterable[Tuple[tuple, tuple]]) -> List[_Deal]:
         """Every deal that helps you on a quick estimate, which counts every game as a start,
         and that may look fair enough to them. The full scoring is too slow for every deal."""
-        their_solo = sum(self.now_lineups.solo(p) for p in self.teams[tid])
+        their_solo = sum(self.their_lineups.solo(p) for p in self.teams[tid])
         out = []
         for give, get in deals:
             d = self.quick_one(tid, give, get)
             d.ours = (sum(self.ros_lineups.solo(p) for p in d.mine) - self.my_solo) / self.weeks
-            theirs_quick = (sum(self.now_lineups.solo(p) for p in d.theirs) - their_solo) / self.weeks
+            theirs_quick = (sum(self.their_lineups.solo(p) for p in d.theirs) - their_solo) / self.weeks
             if d.ours > 0 and theirs_quick >= -self.cfg.trade_fairness - SHORTLIST_SLACK:
                 out.append(d)
         return out
@@ -256,15 +281,15 @@ class _Market:
     def quick_one(self, tid: int, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> _Deal:
         """One deal put back to size on both sides, ready to score, whatever the quick estimate."""
         mine, drop, add = _swap(self.me, give, get, self.safe, self.ros, self.fa_ros)
-        theirs, tdrop, tadd = _swap(self.teams[tid], get, give, set(), self.now, self.fa_now)
+        theirs, tdrop, tadd = _swap(self.teams[tid], get, give, set(), self.their, self.fa_ros)
         return _Deal(0.0, tuple(give), tuple(get), mine, drop, add, theirs, tdrop, tadd)
 
     def score(self, tid: int, d: _Deal) -> Trade:
         """A deal scored in full, with the best lineup each day."""
         if tid not in self._their_before:
-            self._their_before[tid] = self.now_lineups.total(self.teams[tid])
+            self._their_before[tid] = self.their_lineups.total(self.teams[tid])
         total = self.ros_lineups.total(d.mine) - self.my_before
-        their_gain = (self.now_lineups.total(d.theirs) - self._their_before[tid]) / self.weeks
+        their_gain = (self.their_lineups.total(d.theirs) - self._their_before[tid]) / self.weeks
         v = self.val
         return Trade(
             tid, self.team_name(tid), [v(p) for p in d.give], [v(p) for p in d.get],
@@ -273,7 +298,7 @@ class _Market:
         )
 
     def acceptable(self, t: Trade) -> bool:
-        """Adds min_gain for you and looks fair enough to them on current form."""
+        """Adds min_gain for you and looks fair enough to them."""
         return t.gain >= self.cfg.trade_min_gain and t.their_gain >= -self.cfg.trade_fairness
 
 
@@ -372,11 +397,13 @@ def _reasons(t: Trade, snap: Snapshot) -> List[str]:
     r = [_player_line(v, True, snap.scoring) for v in t.give]
     r += [_player_line(v, False, snap.scoring) for v in t.get]
     if t.drop:
-        r.append(f"to make room you'd drop {_names(t.drop)}")
+        r.append(f"you'd drop {_names(t.drop)}")
     if t.add:
-        r.append(f"the open spot goes to free agent {_names(t.add)}")
+        r.append(f"you'd pick up free agent {_names(t.add)}, valued over the rest of the season since he's a streamer")
     if t.their_drop:
-        r.append(f"they'd have to drop {' and '.join(v.player.name for v in t.their_drop)}")
+        r.append(f"they'd drop {' and '.join(v.player.name for v in t.their_drop)}")
+    if t.their_add:
+        r.append(f"they'd pick up free agent {_names(t.their_add)}")
     m = snap.matchup
     if m is not None:
         ids = {v.player.id for v in t.get}
@@ -401,7 +428,7 @@ class Evaluation:
     days: int
     through: Optional[date]
     verdict: str  # "good", "even" or "bad", for you
-    accepts: bool  # whether it looks no worse than the fairness bar to them on current form
+    accepts: bool  # whether it looks no worse than the fairness bar to them
     notes: List[str] = field(default_factory=list)  # read-as corrections, untouchables, the best player
     min_gain: float = 0.0
     fairness: float = 0.0
@@ -493,8 +520,9 @@ def _verdict(gain: float, min_gain: float) -> str:
 def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids: Sequence[int],
                    notes: Sequence[str] = (), alternatives: bool = True) -> Evaluation:
     """Score a trade you name the way the trade scout scores the ones it finds: your best
-    lineups over the rest of the season on rest of season values, theirs on now values (how
-    it looks to them) and on rest of season values (what it really does for them). Any
+    lineups over the rest of the season on rest of season values, theirs on a blend of now
+    and rest of season (how it looks to them) and on rest of season values alone (what it
+    really does for them). Any
     number of players a side: the side that ends up with more drops its weakest, the side
     with fewer picks up the best free agents. Then, unless alternatives is False, the best
     other trades with the same team built around the players you chose to send."""
@@ -589,7 +617,7 @@ def _alt_deals(m: _Market, tid: int, core: Sequence[PlayerView], skip: Tuple[Fro
 def find_alternatives(m: _Market, tid: int, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> List[Trade]:
     """Other trades with the same team built around the players you chose to send: a 1-for-1,
     a package of yours for one of theirs, one of yours for two or three of theirs. Only ones
-    that add min_gain for you and look fair enough to them on current form, scored the same
+    that add min_gain for you and look fair enough to them, scored the same
     way as the trade you asked about. The best of each shape first, then the best of the rest,
     so a list isn't five versions of the same deal."""
     skip = (frozenset(p.id for p in give), frozenset(p.id for p in get))

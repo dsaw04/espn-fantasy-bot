@@ -162,7 +162,11 @@ def pickup_key(cfg: Config) -> tuple:
 
 
 def trade_key(cfg: Config) -> tuple:
-    return tuple(cfg.untouchable), cfg.trade_max_players, cfg.trade_min_gain, cfg.trade_fairness
+    return tuple(cfg.untouchable), cfg.trade_max_players, cfg.trade_min_gain, cfg.trade_fairness, cfg.trade_their_recent
+
+
+THEM_HELP = ("How it looks to them: their players on a blend of recent form and rest of season (see Settings), "
+             "free agents on rest of season")
 
 
 # ---- tabs ------------------------------------------------------------------------
@@ -200,12 +204,17 @@ def settings(cfg: Config, snap: Snapshot) -> Config:
             "Fpts/week it may look worse to them", 0.0, 50.0, cfg.trade_fairness, 0.5,
             help="Raise it to see bolder offers.",
         )
+        their_recent = st.slider(
+            "How much other managers go by recent form (%)", 0, 100, round(cfg.trade_their_recent * 100), 10,
+            help="The rest is rest of season value. 100 judges trades for them on the last week or two only.",
+        )
         st.form_submit_button("Apply", type="primary", width="stretch")
     st.caption("These last until you reload the page. The defaults live in bot.toml.")
     return replace(
         cfg, untouchable=untouchable, max_moves=int(max_moves), streaming_spots=int(streaming),
         min_win_gain=win_gain / 100, min_edge=min_edge,
         trade_max_players=max_players, trade_min_gain=min_gain, trade_fairness=fairness,
+        trade_their_recent=their_recent / 100,
     )
 
 
@@ -356,7 +365,7 @@ def trade_card(i: int, t, title: str = ""):
         st.markdown(f"**{i}. {title or f'Trade with {t.team_name}'}**  \nSend **{give}**  \nGet **{get}**")
         row = st.container(horizontal=True)
         row.metric("For you", f"{t.gain:+.1f}/wk", border=True)
-        row.metric("To them, now", f"{t.their_gain:+.1f}/wk", border=True)
+        row.metric("To them", f"{t.their_gain:+.1f}/wk", border=True, help=THEM_HELP)
         st.caption(f"{t.total:+.0f} fpts for you over the rest of the season")
         with st.expander("Details"):
             st.markdown("\n".join(f"- {md(x)}" for x in t.reasons))
@@ -364,8 +373,9 @@ def trade_card(i: int, t, title: str = ""):
 
 
 def trades(cfg: Config, scout: Snapshot) -> None:
-    st.caption("*Now* is recent form, which other managers go by. *Rest of season* leans on the season "
-               "and ESPN's projection. Trades are scored with your best lineup each day.")
+    st.caption("*Now* is recent form. *Rest of season* leans on the season and ESPN's projection. Trades are "
+               "scored with your best lineup each day: rest of season for you, a blend of both for them. Free "
+               "agents count at rest of season value, since a hot week off waivers is a streamer.")
     mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], default="Find trades",
                                 label_visibility="collapsed")
     if mode == "Check a trade":
@@ -428,7 +438,7 @@ def show_evaluation(e: Evaluation) -> None:
     VERDICT_BOX[e.verdict](md(evaluation_headline(e)))
     row = st.container(horizontal=True)
     row.metric("For you", f"{t.gain:+.1f}/wk", border=True, help="Rest of season values, best lineup each day")
-    row.metric("To them, now", f"{t.their_gain:+.1f}/wk", border=True, help="How it looks on current form")
+    row.metric("To them", f"{t.their_gain:+.1f}/wk", border=True, help=THEM_HELP)
     row.metric("To them, really", f"{e.their_ros_gain:+.1f}/wk", border=True, help="Their side on rest of season values")
     through = f" through {e.through:%b} {e.through.day}" if e.through else ""
     st.caption(f"{t.total:+.0f} fpts for you over the rest of the season ({e.days} days{through}).")
@@ -494,7 +504,7 @@ def find_trades(cfg: Config) -> None:
         trade_card(i, t)
     if not tr.trades:
         even = "looks even" if tr.fairness <= 0 else f"looks no more than {tr.fairness:g} fpts/week worse"
-        st.info(f"None. No trade adds {tr.min_gain:g}+ fpts/week for you and {even} to the other team on current form.")
+        st.info(f"None. No trade adds {tr.min_gain:g}+ fpts/week for you and {even} to the other team.")
 
     if tr.sell_high:
         st.subheader("Sell high", anchor=False)

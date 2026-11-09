@@ -9,7 +9,7 @@ team_id = 3                # run `python -m fantasy_bot --list-teams` to find yo
 [bot]
 # Anyone on your roster can be suggested as a drop, except these.
 # Names must match ESPN spelling.
-untouchable = ["Cade Cunningham", "Cooper Flagg"]
+untouchable = ["Cade Cunningham"]
 
 max_moves = 2              # most add/drop suggestions per day (never more than the adds you have left)
 options_shown = 10         # swaps listed in all: the picks above, then the next best on their own
@@ -52,7 +52,8 @@ hashtag = 0.25             # Hashtag's per game stats scored with your league's 
 # Sells players playing above their rest of season value for players playing below theirs.
 max_players = 2            # most players a side (1-for-1 up to 2-for-2)
 min_gain = 3.0             # fpts per week a trade must add for you over the rest of the season
-fairness = 0.0             # fpts per week a trade may look worse to the other team on current form
+fairness = 0.0             # fpts per week a trade may look worse to the other team
+their_recent = 0.5         # how much the other manager goes by recent form: 1 = recent form only, 0 = rest of season only
 shown = 5                  # trades listed
 projection_games = 20      # ESPN's projection counts as this many real games in the rest of season value
 

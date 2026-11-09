@@ -149,14 +149,19 @@ def test_uneven_trades_drop_your_weakest_or_fill_the_spot_from_free_agents():
     me, theirs = snap.my_roster, snap.other_rostered[:5]
     value = lambda p: p.fpts["season"]
     pool = [snap.free_agents[0]]
-    # Two for one: you'd drop your weakest, never an untouchable or the player you just got.
+    # Two for one: you'd drop your weakest, never an untouchable.
     after, drop, add = _swap(me, me[1:2], theirs[:2], {4}, value, pool)
     assert names_of(drop) == ["Bench Guy"] and not add and len(after) == len(me)
+    # The player you just got can be the one cut, when he's the weakest.
     after, drop, add = _swap(me, me[1:2], [theirs[4], theirs[0]], {4}, value, pool)
-    assert names_of(drop) == ["Bench Guy"]  # Rival Bench is worse, but you traded for him
+    assert names_of(drop) == ["Rival Bench"] and not add
     # One for two: the open spot goes to the best healthy free agent.
     after, drop, add = _swap(me, me[1:3], theirs[:1], set(), value, pool)
     assert names_of(add) == ["Free Agent"] and not drop and len(after) == len(me)
+    # One for one: a player you just got who's worse than the best free agent is cut for him.
+    after, drop, add = _swap(me, me[1:2], theirs[4:5], set(), value, pool)  # Rival Bench (15) for a 16/g free agent
+    assert names_of(drop) == ["Rival Bench"] and names_of(add) == ["Free Agent"] and len(after) == len(me)
+    assert "Rival Bench" not in names_of(after)
 
 
 def names_of(ps):
@@ -185,7 +190,7 @@ def test_says_none_when_no_trade_works():
 def test_render_trades_is_readable():
     text = render_trades(build_trades(league(), cfg(untouchable=["Untouchable Star"])))
     assert text.startswith("**Mine: trade scout** (rest of season, 27 days through Dec 5)")
-    assert "1. Send **" in text and "fpts/week for you" in text and "On current form they see" in text
+    assert "1. Send **" in text and "fpts/week for you" in text and "To them it looks" in text
     assert "**Sell high**" in text and "- Hot Guard (BOS PG/SG): last 7 45.0, last 15 44.0" in text
     assert "**Buy low**" in text and "Cold Wing (BOS PG/SF/SG, Rival)" in text
     print(text)
@@ -294,7 +299,8 @@ def test_three_for_one_makes_room_on_both_sides():
     e = evaluate_trade(snap, c, [2, 3, 5], [11])  # three of yours for Their Star
     t = e.trade
     assert names(t.add) == ["Free Agent"]  # the only healthy free agent fills one of your two open spots
-    assert len(t.their_drop) == 2 and not set(names(t.their_drop)) & {"Steady Forward", "Steady Center", "Bench Guy"}
+    # They take three for one and cut their two weakest, including Bench Guy (18) whom they just got.
+    assert names(t.their_drop) == ["Rival Bench", "Bench Guy"]
     assert any("Their Star is the best player in the deal" in n for n in e.notes)
 
 
@@ -315,7 +321,7 @@ def test_rejects_an_uneven_or_cross_team_trade_built_by_hand():
 def test_render_evaluation_is_readable():
     text = render_evaluation(evaluate_trade(league(), cfg(), [1], [10]))
     assert text.startswith("**Trade check**: Hot Guard to Rival for Cold Wing")
-    assert "fpts/week for you" in text and "on current form it looks" in text and "**Details**" in text
+    assert "fpts/week for you" in text and "it looks" in text and "**Details**" in text
     print(text)
 
 
@@ -389,3 +395,40 @@ def test_render_lists_the_alternatives():
     assert "**Other trades with Rival** (built around Hot Guard)" in text
     assert "1-for-1: send **Hot Guard** for **Cold Wing**" in text
     print(text)
+
+
+# ---- the long view ---------------------------------------------------------------------
+def test_adding_a_player_never_makes_a_deal_look_worse_to_them():
+    snap, c = league(), cfg()
+    snap.my_roster[4].fpts = {k: 10 for k in snap.my_roster[4].fpts}  # Bench Guy, now worse than the 16/g free agent
+    one_for_two = evaluate_trade(snap, c, [1], [10, 13], alternatives=False).trade  # they get an open spot
+    two_for_two = evaluate_trade(snap, c, [1, 5], [10, 13], alternatives=False).trade  # Bench Guy too
+    assert names(one_for_two.their_add) == ["Free Agent"]
+    assert "Bench Guy" in names(two_for_two.their_drop) and names(two_for_two.their_add) == ["Free Agent"]
+    assert two_for_two.their_gain >= one_for_two.their_gain - 1e-9
+
+
+def test_free_agents_count_at_rest_of_season_value_on_both_sides():
+    snap, c = league(), cfg()
+    hot = tp(33, "Hot Streamer", G, 40, 35, 12, 12, owner="fa")  # a big week off waivers, 12/g on the season
+    snap.free_agents += [steady(32, "Steady FA", G, 18, owner="fa"), hot]
+    e = evaluate_trade(snap, c, [1], [10, 13], alternatives=False)  # they get an open spot
+    assert names(e.trade.their_add) == ["Steady FA"]  # not the hot week: about 15/g over the rest of the season
+    e = evaluate_trade(snap, c, [1, 2], [10], alternatives=False)  # you get an open spot
+    assert names(e.trade.add) == ["Steady FA"]
+
+
+def test_their_view_blends_recent_form_and_rest_of_season():
+    def their_gain(recent):
+        return evaluate_trade(league(), cfg(trade_their_recent=recent), [1], [10], alternatives=False).trade.their_gain
+    # Hot Guard (hot now, lower rest of season) for Cold Wing (cold now, higher rest of season):
+    # the more they go by recent form, the better it looks to them.
+    assert their_gain(1.0) > their_gain(0.5) > their_gain(0.0)
+
+
+def test_reads_their_recent_setting(tmp_path):
+    toml = tmp_path / "bot.toml"
+    toml.write_text("[league]\nleague_id = 1\nyear = 2027\nteam_id = 3\n[trade]\ntheir_recent = 0.8\n", encoding="utf-8")
+    assert load_config(toml, tmp_path / "none.toml").trade_their_recent == 0.8
+    toml.write_text("[league]\nleague_id = 1\nyear = 2027\nteam_id = 3\n", encoding="utf-8")
+    assert load_config(toml, tmp_path / "none.toml").trade_their_recent == 0.5
