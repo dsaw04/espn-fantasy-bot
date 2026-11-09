@@ -1,5 +1,13 @@
 [client]
 toolbarMode = "minimal"  # no developer menu on the phone
 
+# Dark, violet and cyan. streamlit_app.py's STYLE adds the glow, gradients and fonts on top.
 [theme]
-primaryColor = "#E8590C"
+base = "dark"
+primaryColor = "#8B5CF6"
+backgroundColor = "#07080F"
+secondaryBackgroundColor = "#12142A"
+textColor = "#E6E8F5"
+linkColor = "#22D3EE"
+borderColor = "#262A4A"
+baseRadius = "0.75rem"
