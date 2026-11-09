@@ -27,130 +27,15 @@ from fantasy_bot.trade import Evaluation, TradeInputError, TradeReport, build_tr
 ROOT = Path(__file__).parent
 TTL = 15 * 60  # seconds a read from ESPN is reused before the next one
 
-# Dark glass on a violet and cyan glow, on top of the dark theme in .streamlit/config.toml.
 # Phones get tighter margins, smaller headings and smaller metrics, so two fit side by side.
 STYLE = """<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
-:root {
-  --violet: #8B5CF6;
-  --cyan: #22D3EE;
-  --pink: #E879F9;
-  --glass: rgba(18, 20, 42, 0.62);
-  --edge: rgba(139, 92, 246, 0.28);
-  --muted: #9AA0C3;
-  --grad: linear-gradient(110deg, var(--violet) 0%, var(--pink) 45%, var(--cyan) 100%);
-}
-
-html, body, [class*="st-"], .stMarkdown, button, input, textarea {
-  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-}
-code, pre, [data-testid="stCode"] * { font-family: 'JetBrains Mono', ui-monospace, monospace !important; }
-
-/* A slow aurora behind everything */
-[data-testid="stApp"] {
-  background:
-    radial-gradient(60rem 30rem at 10% -10%, rgba(139, 92, 246, 0.22), transparent 60%),
-    radial-gradient(50rem 28rem at 110% 10%, rgba(34, 211, 238, 0.14), transparent 60%),
-    radial-gradient(40rem 30rem at 50% 120%, rgba(232, 121, 249, 0.10), transparent 60%),
-    #07080F;
-  background-attachment: fixed;
-}
-[data-testid="stHeader"] { background: transparent; }
-
-/* Headings: gradient title, grotesk subheads */
-h1, h2, h3 { font-family: 'Space Grotesk', 'Inter', sans-serif !important; letter-spacing: -0.02em; }
-h1 {
-  background: var(--grad);
-  -webkit-background-clip: text; background-clip: text;
-  color: transparent !important;
-  font-weight: 700 !important;
-}
-h3 { color: #F1F2FA !important; font-weight: 600 !important; }
-h3::before {
-  content: ""; display: inline-block; width: 0.5rem; height: 0.5rem; margin: 0 0.55rem 0.18rem 0;
-  border-radius: 50%; background: var(--grad); box-shadow: 0 0 10px var(--violet);
-}
-[data-testid="stCaptionContainer"] { color: var(--muted) !important; }
-
-/* The "AI scout" pill above the title */
-.ai-pill {
-  display: inline-flex; align-items: center; gap: 0.4rem;
-  padding: 0.22rem 0.7rem; border-radius: 999px;
-  font: 600 0.72rem/1.2 'JetBrains Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase;
-  color: #E9D5FF; background: rgba(139, 92, 246, 0.14); border: 1px solid var(--edge);
-}
-.ai-pill .dot {
-  width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--cyan);
-  box-shadow: 0 0 8px var(--cyan); animation: pulse 2s ease-in-out infinite;
-}
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-/* Glass cards: bordered containers, metrics, expanders, alerts */
-[data-testid="stVerticalBlockBorderWrapper"], [data-testid="stMetric"], [data-testid="stExpander"] details {
-  background: var(--glass) !important;
-  border: 1px solid var(--edge) !important;
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02) inset, 0 10px 30px -12px rgba(0, 0, 0, 0.6);
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-[data-testid="stVerticalBlockBorderWrapper"]:hover {
-  border-color: rgba(34, 211, 238, 0.45) !important;
-  box-shadow: 0 0 24px -6px rgba(139, 92, 246, 0.45);
-}
-[data-testid="stMetric"] { padding: 0.8rem 1rem !important; }
-[data-testid="stMetricLabel"] p {
-  font: 500 0.72rem 'JetBrains Mono', monospace !important; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--muted) !important;
-}
-[data-testid="stMetricValue"] {
-  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
-  background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-[data-testid="stAlert"] > div {
-  background: var(--glass) !important; border: 1px solid var(--edge);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-}
-
-/* Tabs as a floating segmented bar */
-[data-testid="stTabs"] [role="tablist"] {
-  gap: 0.25rem; padding: 0.3rem; border-radius: 999px;
-  background: var(--glass); border: 1px solid var(--edge); width: fit-content; max-width: 100%;
-  overflow-x: auto;
-}
-[data-testid="stTabs"] [role="tab"] { border-radius: 999px; padding: 0.35rem 0.95rem; color: var(--muted); }
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-  color: #fff; background: linear-gradient(110deg, rgba(139, 92, 246, 0.55), rgba(34, 211, 238, 0.35));
-  box-shadow: 0 0 16px -4px var(--violet);
-}
-[data-testid="stTabs"] [data-baseweb="tab-highlight"], [data-testid="stTabs"] [data-baseweb="tab-border"] { display: none; }
-
-/* Primary buttons glow */
-[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] {
-  background: var(--grad) !important; border: none !important; color: #0B0B14 !important; font-weight: 700;
-  box-shadow: 0 6px 24px -6px rgba(139, 92, 246, 0.7);
-}
-[data-testid="stBaseButton-primary"]:hover, [data-testid="stBaseButton-primaryFormSubmit"]:hover {
-  filter: brightness(1.1); box-shadow: 0 6px 30px -4px rgba(34, 211, 238, 0.7);
-}
-[data-testid="stBaseButton-secondary"] { background: var(--glass) !important; border-color: var(--edge) !important; }
-
-/* Inputs and tables */
-[data-baseweb="select"] > div, [data-baseweb="input"] { background: rgba(10, 11, 24, 0.7) !important; border-color: var(--edge) !important; }
-[data-baseweb="tag"] { background: rgba(139, 92, 246, 0.25) !important; }
-[data-testid="stDataFrame"] { border: 1px solid var(--edge); border-radius: 0.75rem; overflow: hidden; }
-
 @media (max-width: 640px) {
   [data-testid="stMainBlockContainer"] { padding: 4rem 0.75rem 4rem; }
   [data-testid="stMetricValue"] { font-size: 1.4rem; }
   h1 { font-size: 1.6rem !important; }
   h3 { font-size: 1.25rem !important; }
-  [data-testid="stTabs"] [role="tab"] { padding: 0.3rem 0.7rem; }
 }
-@media (prefers-reduced-motion: reduce) { .ai-pill .dot { animation: none; } }
 </style>"""
-
-PILL = '<span class="ai-pill"><span class="dot"></span>AI fantasy scout</span>'
 
 
 def md(text: str) -> str:
@@ -213,9 +98,7 @@ def unlocked(password: str) -> bool:
     """Anyone with the link sees your league, so an optional password keeps it to you."""
     if not password or st.session_state.get("unlocked"):
         return True
-    st.html(PILL)
-    st.title("Fantasy scout", anchor=False)
-    st.caption("Locked. Enter the password to see your league.")
+    st.title("🏀 Fantasy scout", anchor=False)
     entered = st.text_input("Password", type="password")
     if entered and hmac.compare_digest(entered.encode(), password.encode()):
         st.session_state.unlocked = True
@@ -283,8 +166,7 @@ def trade_key(cfg: Config) -> tuple:
 
 
 def header(snap: Snapshot) -> None:
-    st.html(PILL)
-    st.title(snap.my_team_name.strip(), anchor=False)
+    st.title(f"🏀 {snap.my_team_name.strip()}", anchor=False)
     row = st.container(horizontal=True, vertical_alignment="center")
     day = snap.period_dates.get(snap.today)
     when = f"{day:%a %b} {day.day} · " if day else ""
@@ -315,7 +197,7 @@ def settings(cfg: Config, snap: Snapshot) -> Config:
             "Fpts/week it may look worse to them", 0.0, 50.0, cfg.trade_fairness, 0.5,
             help="Raise it to see bolder offers.",
         )
-        st.form_submit_button("Apply", type="primary", icon=":material/check:", width="stretch")
+        st.form_submit_button("Apply", type="primary", width="stretch")
     st.caption("These last until you reload the page. The defaults live in bot.toml.")
     return replace(
         cfg, untouchable=untouchable, max_moves=int(max_moves), streaming_spots=int(streaming),
@@ -475,14 +357,10 @@ def trade_card(i: int, t) -> None:
             st.markdown("\n".join(f"- {md(x)}" for x in t.reasons))
 
 
-TRADE_MODES = {"Find trades": ":material/travel_explore:", "Check a trade": ":material/balance:"}
-
-
 def trades(cfg: Config, scout: Snapshot) -> None:
     st.caption("*Now* is recent form, which other managers go by. *Rest of season* leans on the season "
                "and ESPN's projection. Trades are scored with your best lineup each day.")
     mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], default="Find trades",
-                                format_func=lambda m: TRADE_MODES[m] + " " + m,
                                 label_visibility="collapsed")
     if mode == "Check a trade":
         check_trade(cfg, scout)
@@ -522,7 +400,7 @@ def check_trade(cfg: Config, scout: Snapshot) -> None:
         return
     # The first check reads every roster's recent form; after that it updates as you pick.
     if not st.session_state.get("trade_data_loaded"):
-        if not st.button("Evaluate", type="primary", icon=":material/auto_awesome:", width="stretch"):
+        if not st.button("Evaluate", type="primary", width="stretch"):
             st.caption("Reads every team's roster for recent form, so the first check takes about 30 seconds.")
             return
         st.session_state.trade_data_loaded = True
@@ -574,7 +452,7 @@ def show_evaluation(e: Evaluation) -> None:
 
 def find_trades(cfg: Config) -> None:
     if not st.session_state.get("trades"):
-        if not st.button("Find trades", type="primary", icon=":material/auto_awesome:", width="stretch"):
+        if not st.button("Find trades", type="primary", width="stretch"):
             st.caption("Reads every team's roster, so the first look takes about 30 seconds.")
             return
         st.session_state.trades = True
@@ -619,9 +497,7 @@ def main() -> None:
 
     snap = fetch(scout_data, base)
     header(snap)
-    today_tab, pickups_tab, trades_tab, settings_tab = st.tabs([
-        ":material/today: Today", ":material/person_add: Pickups", ":material/swap_horiz: Trades", ":material/tune: Settings",
-    ])
+    today_tab, pickups_tab, trades_tab, settings_tab = st.tabs(["Today", "Pickups", "Trades", "Settings"])
     with settings_tab:  # first, since the other tabs use what's set here
         cfg = settings(base, snap)
     r = daily_report(snap, cfg, snap.now.isoformat(), pickup_key(cfg))
