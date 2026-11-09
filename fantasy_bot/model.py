@@ -159,6 +159,21 @@ class Snapshot:
     now: Optional[datetime] = None  # when the snapshot was taken; games that started before it are locked
     season_end: Optional[int] = None  # the league's last scoring period
     team_names: Dict[int, str] = field(default_factory=dict)  # fantasy team id -> name
+    # fantasy team id -> season record (wins, losses, ties). Empty when unknown.
+    team_records: Dict[int, Tuple[int, int, int]] = field(default_factory=dict)
+
+    def record(self, team_id: int) -> str:
+        """'5-3', or '5-3-1' with ties. Empty when unknown."""
+        r = self.team_records.get(team_id)
+        if r is None:
+            return ""
+        return f"{r[0]}-{r[1]}" + (f"-{r[2]}" if r[2] else "")
+
+    def win_pct(self, team_id: int) -> float:
+        """Ties count half. 0.5 when unknown or before any games."""
+        w, l, t = self.team_records.get(team_id, (0, 0, 0))
+        games = w + l + t
+        return (w + t / 2) / games if games else 0.5
 
     def roster_for_moves(self) -> List[PlayerView]:
         return self.my_roster if self.next_roster is None else self.next_roster

@@ -393,6 +393,10 @@ class EspnSource:
         state = self._league_state()
         scoring, slots = self._league_settings(state.get("settings", {}))
         names = {t.team_id: t.team_name.strip() for t in lg.teams}
+        # Season record by team, (wins, losses, ties). Left out if espn-api doesn't have it.
+        records = {t.team_id: (int(getattr(t, "wins", 0) or 0), int(getattr(t, "losses", 0) or 0),
+                               int(getattr(t, "ties", 0) or 0))
+                   for t in lg.teams if hasattr(t, "wins")}
         return Snapshot(
             today=today,
             horizon=horizon,
@@ -409,4 +413,5 @@ class EspnSource:
             now=datetime.now(EASTERN),
             season_end=last,
             team_names=names,
+            team_records=records,
         )

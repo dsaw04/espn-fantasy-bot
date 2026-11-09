@@ -221,6 +221,35 @@ def render(r: Report) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def pickups_line(t) -> str:
+    """How much of each side's weekly number comes from the free agents it would pick up."""
+    parts = []
+    if t.add:
+        parts.append(f"{t.fa_gain:+.1f} of your {t.gain:+.1f}/week")
+    if t.their_add:
+        parts.append(f"{t.their_fa_gain:+.1f} of their {t.their_gain:+.1f}/week")
+    return f"Free agent pickups make up {' and '.join(parts)}."
+
+
+def breakdown(t) -> str:
+    """Face value next to the weekly number, and the part free agents make up: a trade that
+    only works because of a waiver pickup is a different trade from one that works on talent."""
+    line = f"Face value (the players alone): {t.face:+.1f}/week for you, {t.their_face:+.1f}/week to them"
+    if t.add or t.their_add:
+        line += f". {pickups_line(t)[:-1]}"
+    return line
+
+
+def their_bar(fairness: float) -> str:
+    """What a trade has to do for the other team at face value, from trade_fairness: above 0 it may be
+    that much worse for them, below 0 it has to help them by that much too."""
+    if fairness > 0:
+        return f"is no more than {fairness:g} fpts/week worse for them at face value"
+    if fairness < 0:
+        return f"adds {-fairness:g}+ fpts/week for them too at face value"
+    return "is at least even for them at face value"
+
+
 def _trade_head(i: int, t) -> str:
     give = " and ".join(f"**{v.player.name}**" for v in t.give)
     get = " and ".join(f"**{v.player.name}**" for v in t.get)
@@ -248,10 +277,9 @@ def render_trades(r: TradeReport) -> str:
     if r.trades:
         for i, t in enumerate(r.trades, 1):
             lines.append(_trade_head(i, t))
-            lines += [f"   - {reason}" for reason in t.reasons]
+            lines += [f"   - {breakdown(t)}"] + [f"   - {reason}" for reason in t.reasons]
     else:
-        even = "looks even" if r.fairness <= 0 else f"looks no more than {r.fairness:g} fpts/week worse"
-        lines.append(f"- None. No trade adds {r.min_gain:g}+ fpts/week for you and {even} to the other team.")
+        lines.append(f"- None. No trade adds {r.min_gain:g}+ fpts/week for you and {their_bar(r.fairness)}.")
     lines.append("")
 
     if r.sell_high:
@@ -277,9 +305,9 @@ def evaluation_headline(e: Evaluation) -> str:
     t = e.trade
     you = f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you ({t.total:+.0f} over the rest of the season)."
     if e.accepts:
-        them = f"They should go for it: it looks {t.their_gain:+.1f}/week to them."
+        them = f"They should go for it: {t.their_face:+.1f}/week for them at face value ({t.their_gain:+.1f} with roster moves)."
     else:
-        them = f"They'd likely say no: it looks {t.their_gain:+.1f}/week to them."
+        them = f"They'd likely say no: {t.their_face:+.1f}/week for them at face value ({t.their_gain:+.1f} with roster moves)."
     return f"{you} {them}"
 
 
@@ -295,9 +323,16 @@ def render_evaluation(e: Evaluation) -> str:
         f"On rest of season values it really adds {e.their_ros_gain:+.1f}/week for them.",
         "",
         f"Per game, you send {sum(v.ros for v in t.give):.1f} rest of season ({sum(v.now for v in t.give):.1f} now) "
-        f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now). The weekly numbers "
-        "count only the games that make your best lineup each day.",
+        f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now).",
+        "",
+        "**Face value vs with roster moves**",
+        f"- Face value, the players in the deal alone with every game counted: {t.face:+.1f}/week for you, "
+        f"{t.their_face:+.1f}/week to them.",
+        f"- With roster moves, only games that make the best lineup each day, after drops and free agent "
+        f"pickups: {t.gain:+.1f}/week for you, {t.their_gain:+.1f}/week to them.",
     ]
+    if t.add or t.their_add:
+        lines.append(f"- {pickups_line(t)}")
     if e.notes:
         lines += [""] + [f"- {n}" for n in e.notes]
     lines += ["", "**Details**"] + [f"- {r}" for r in t.reasons]
@@ -309,7 +344,7 @@ def render_evaluation(e: Evaluation) -> str:
             get = " and ".join(f"**{v.player.name}**" for v in a.get)
             lines.append(f"{i}. {shape_label(a)}: send {give} for {get}. ~{a.gain:+.1f} fpts/week for you "
                          f"({a.total:+.0f} over the rest of the season). To them it looks {a.their_gain:+.1f}/week.")
-            lines += [f"   - {r}" for r in a.reasons]
+            lines += [f"   - {breakdown(a)}"] + [f"   - {r}" for r in a.reasons]
     else:
         lines.append(f"- {no_alternatives(e)}")
     return "\n".join(lines).rstrip() + "\n"
@@ -333,11 +368,10 @@ def search_subject(s: TradeSearch) -> str:
 
 
 def search_none(s: TradeSearch) -> str:
-    even = "looks even" if s.fairness <= 0 else f"looks no more than {s.fairness:g} fpts/week worse"
     teams = "team" if s.teams_searched == 1 else "teams"
     where = "" if s.partner else f"Across {s.teams_searched} {teams}, no"
     return (f"None. {where or 'No'} trade {search_subject(s)} adds {s.min_gain:g}+ "
-            f"fpts/week for you and {even} to them.")
+            f"fpts/week for you and {their_bar(s.fairness)}.")
 
 
 def render_search(s: TradeSearch, notes: Sequence[str] = ()) -> str:
@@ -358,7 +392,7 @@ def render_search(s: TradeSearch, notes: Sequence[str] = ()) -> str:
         get = " and ".join(f"**{v.player.name}**" for v in t.get)
         lines.append(f"{i}. {shape_label(t)} with **{t.team_name}**: send {give} for {get}. ~{t.gain:+.1f} fpts/week "
                      f"for you ({t.total:+.0f} over the rest of the season). To them it looks {t.their_gain:+.1f}/week.")
-        lines += [f"   - {r}" for r in t.reasons]
+        lines += [f"   - {breakdown(t)}"] + [f"   - {r}" for r in t.reasons]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -368,9 +402,8 @@ def alternatives_heading(e: Evaluation) -> str:
 
 
 def no_alternatives(e: Evaluation) -> str:
-    even = "looks even" if e.fairness <= 0 else f"looks no more than {e.fairness:g} fpts/week worse"
     return (f"None. No other 1-for-1, package or spread with {e.trade.team_name} adds {e.min_gain:g}+ fpts/week "
-            f"for you and {even} to them.")
+            f"for you and {their_bar(e.fairness)}.")
 
 
 def post_to_discord(webhook: str, text: str) -> None:

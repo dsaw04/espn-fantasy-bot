@@ -114,17 +114,17 @@ def test_every_trade_helps_you_and_looks_even_to_them():
     c = cfg(untouchable=["Untouchable Star"])
     r = build_trades(league(), c)
     for t in r.trades:
-        assert t.gain >= c.trade_min_gain and t.their_gain >= 0
+        assert t.gain >= c.trade_min_gain and t.their_face >= 0
         assert t.total == pytest.approx(t.gain * len(trade_days(league())) / 7)
 
 
 def test_fairness_lets_in_trades_that_look_worse_to_them():
-    def their_gains(fairness):
+    def their_faces(fairness):
         c = cfg(untouchable=["Untouchable Star"], trades_shown=50, trade_fairness=fairness)
-        return [t.their_gain for t in build_trades(league(), c).trades]
-    assert min(their_gains(0)) >= 0
+        return [t.their_face for t in build_trades(league(), c).trades]
+    assert min(their_faces(0)) >= 0
     # Hot Guard for Cold Wing and Rival Center: 42 now plus a 16/g free agent for their 29 and 28
-    assert min(their_gains(500)) < 0
+    assert min(their_faces(500)) < 0
 
 
 def test_the_best_player_in_the_deal_goes_to_them():
@@ -326,7 +326,7 @@ def test_rejects_an_uneven_or_cross_team_trade_built_by_hand():
 def test_render_evaluation_is_readable():
     text = render_evaluation(evaluate_trade(league(), cfg(), [1], [10]))
     assert text.startswith("**Trade check**: Hot Guard to Rival for Cold Wing")
-    assert "fpts/week for you" in text and "it looks" in text and "**Details**" in text
+    assert "fpts/week for you" in text and "for them at face value" in text and "**Details**" in text
     print(text)
 
 
@@ -351,7 +351,7 @@ def test_a_bad_trade_gets_better_ones_with_the_same_team_around_the_same_player(
     for a in alts:
         assert a.team_name == "Rival" and "Hot Guard" in names(a.give)
         assert "Untouchable Star" not in names(a.give)  # never packaged in unless you chose him
-        assert a.gain >= c.trade_min_gain and a.their_gain >= -c.trade_fairness
+        assert a.gain >= c.trade_min_gain and a.their_face >= -c.trade_fairness
         assert len(a.give) <= 3 and len(a.get) <= 3 and a.reasons
     assert len({frozenset(names(a.get)) for a in alts}) == len(alts)  # no two ask for the same players
     assert [a.gain for a in alts] == sorted((a.gain for a in alts), reverse=True)
@@ -467,7 +467,7 @@ def test_searches_every_team_around_your_player():
     assert s.trades and len(s.trades) <= SEARCH_SHOWN
     for t in s.trades:
         assert "Hot Guard" in names(t.give) and t.reasons
-        assert t.gain >= c.trade_min_gain and t.their_gain >= -c.trade_fairness
+        assert t.gain >= c.trade_min_gain and t.their_face >= -c.trade_fairness
     for team in {t.team_id for t in s.trades}:
         assert sum(t.team_id == team for t in s.trades) <= SEARCH_PER_TEAM
     assert any(names(t.get) == ["Cold Wing"] for t in s.trades)
@@ -539,7 +539,7 @@ def test_finds_the_best_trades_with_one_team():
     assert s.partner == "Rival" and s.teams_searched == 1 and s.core == s.targets == []
     assert s.trades and len(s.trades) <= SEARCH_SHOWN
     for t in s.trades:
-        assert t.team_name == "Rival" and t.gain >= c.trade_min_gain and t.their_gain >= -c.trade_fairness
+        assert t.team_name == "Rival" and t.gain >= c.trade_min_gain and t.their_face >= -c.trade_fairness
         assert "Untouchable Star" not in names(t.give)
 
 
@@ -568,3 +568,75 @@ def test_render_trades_with_one_team():
     text = render_search(search_trades(league(), cfg(trade_min_gain=1000), [1], team_id=2))
     assert "**Mine: trades with Rival sending Hot Guard**" in text
     assert "None. No trade with Rival sending Hot Guard adds 1000+ fpts/week" in text
+
+
+# ---- trades where both teams gain ------------------------------------------------------------
+from fantasy_bot.report import their_bar  # noqa: E402
+
+
+def test_a_bar_for_how_much_they_gain_too():
+    assert their_bar(0) == "is at least even for them at face value"
+    assert their_bar(4) == "is no more than 4 fpts/week worse for them at face value"
+    assert their_bar(-5) == "adds 5+ fpts/week for them too at face value"
+    c = cfg(untouchable=["Untouchable Star"], trade_fairness=-5)
+    s = search_trades(league(), c, team_id=2)
+    assert all(t.their_face >= 5 and t.gain >= c.trade_min_gain for t in s.trades)
+    text = render_search(search_trades(league(), cfg(trade_fairness=-5, trade_min_gain=1000), team_id=2))
+    assert "adds 1000+ fpts/week for you and adds 5+ fpts/week for them too at face value" in text
+
+
+def test_wanting_them_to_gain_doesnt_change_whether_they_would_accept():
+    e = evaluate_trade(league(), cfg(trade_fairness=-1000), [1], [10], alternatives=False)  # Hot Guard for Cold Wing
+    assert e.trade.their_face > 0 and e.accepts  # they'd take it...
+    assert any("under the +1000/week you want them to get out of it too" in n for n in e.notes)  # ...but it's under your bar
+
+
+def test_team_records():
+    snap = league()
+    snap.team_records = {2: (2, 6, 0), 3: (5, 2, 1)}
+    assert snap.record(2) == "2-6" and snap.record(3) == "5-2-1" and snap.record(1) == ""
+    assert snap.win_pct(2) == 0.25 and snap.win_pct(3) == 5.5 / 8 and snap.win_pct(9) == 0.5
+
+
+# ---- face value next to the lineup number ----------------------------------------------------
+def test_face_value_is_the_players_alone():
+    snap, c = league(), cfg()
+    m = _Market(snap, c)
+    hot, cold = snap.my_roster[0], snap.other_rostered[0]
+    t = evaluate_trade(snap, c, [1], [10], alternatives=False).trade
+    assert t.face == pytest.approx((m.season(cold) - m.season(hot)) / m.weeks)
+    assert t.fa_gain == 0 and t.their_fa_gain == 0
+    assert t.gain == pytest.approx(t.face)  # everyone starts on a 5-man roster with 6 spots, so the two agree
+
+
+def test_free_agent_pickups_are_split_out():
+    snap, c = league(), cfg()
+    m = _Market(snap, c)
+    # Hot Guard and Steady Forward for Cold Wing: your open spot goes to a free agent.
+    t = evaluate_trade(snap, c, [1, 2], [10], alternatives=False).trade
+    assert names(t.add) == ["Free Agent"] and t.fa_gain > 0
+    hot, fwd, cold = snap.my_roster[0], snap.my_roster[1], snap.other_rostered[0]
+    assert t.face == pytest.approx((m.season(cold) - m.season(hot) - m.season(fwd)) / m.weeks)
+    assert t.gain == pytest.approx(t.face + t.fa_gain)  # everyone starts, so the gap is the pickup
+
+
+def test_reports_show_face_value():
+    snap, c = league(), cfg()
+    text = render_evaluation(evaluate_trade(snap, c, [1, 2], [10], alternatives=False))
+    assert "**Face value vs with roster moves**" in text and "Free agent pickups make up +" in text
+    text = render_search(search_trades(league(), cfg(untouchable=["Untouchable Star"]), team_id=2))
+    assert "Face value (the players alone):" in text
+    assert "Face value (the players alone):" in render_trades(build_trades(league(), cfg(untouchable=["Untouchable Star"])))
+
+
+def test_the_bar_for_them_is_face_value_not_their_lineup():
+    snap, c = league(), cfg()
+    snap.free_agents.append(steady(35, "Great FA", F, 30, owner="fa"))
+    # Hot Guard for Cold Wing and Rival Guard: on their lineup it's a gain, only because their open
+    # spot goes to a 30/g free agent. At face value they give up more than they get.
+    e = evaluate_trade(snap, c, [1], [10, 13], alternatives=False)
+    t = e.trade
+    assert names(t.their_add) == ["Great FA"] and t.their_gain > 0 > t.their_face
+    assert not e.accepts and "They'd likely say no" in render_evaluation(e)
+    listed = search_trades(snap, cfg(trade_min_gain=-1000), [1], team_id=2).trades
+    assert not any(set(names(x.get)) == {"Cold Wing", "Rival Guard"} and names(x.give) == ["Hot Guard"] for x in listed)

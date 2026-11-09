@@ -62,7 +62,9 @@ class Config:
     # Trade scout (--trades): sells players running hot for players off to a slow start.
     trade_max_players: int = 2  # most players a side
     trade_min_gain: float = 3.0  # fpts per week a trade must add for you over the rest of the season
-    trade_fairness: float = 0.0  # fpts per week a trade may look worse to the other team
+    # fpts per week a trade may look worse to the other team. Below 0, the least it has to
+    # help them too: -5 lists only trades that add 5+ fpts a week for both sides.
+    trade_fairness: float = 0.0
     # How the other manager values his players: this share recent form ("now"), the rest rest
     # of season. Free agents always count at rest of season value: a streamer, not a keeper.
     trade_their_recent: float = 0.5
