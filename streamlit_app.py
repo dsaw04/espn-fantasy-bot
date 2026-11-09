@@ -173,13 +173,13 @@ def trade_key(cfg: Config) -> tuple:
     return tuple(cfg.untouchable), cfg.trade_max_players, cfg.trade_min_gain, cfg.trade_fairness, cfg.trade_their_recent
 
 
-LINEUP_HELP = ("With roster moves: only the games that make your best lineup each day, after the drops and "
-               "free agent pickups the trade needs. Face value, under it, is the players alone.")
+LINEUP_HELP = ("The trade alone: only the games that make your best lineup each day, the side with more "
+               "players dropping its weakest. No free agent pickups on either side.")
 FACE_HELP = ("The players in the deal alone: every game they can play over the rest of the season, each counted "
              "only for what he scores over a free agent either manager could pick up, nobody dropped or picked "
              "up. Ignores who'd actually start.")
-THEM_HELP = ("How it looks to them: their players on a blend of recent form and rest of season (see Settings), "
-             "free agents on rest of season")
+THEM_HELP = ("How it looks to them: their players on a blend of recent form and rest of season (see Settings). "
+             "The trade alone, no free agent pickups to fill open spots.")
 
 
 # ---- tabs ------------------------------------------------------------------------
@@ -398,8 +398,8 @@ def trade_card(i: int, t, title: str = ""):
 
 def trades(cfg: Config, scout: Snapshot) -> None:
     st.caption("*Now* is recent form. *Rest of season* leans on the season and ESPN's projection. Trades are "
-               "scored with your best lineup each day: rest of season for you, a blend of both for them. Free "
-               "agents count at rest of season value, since a hot week off waivers is a streamer.")
+               "scored with your best lineup each day: rest of season for you, a blend of both for them. Only "
+               "the players in the deal count: no free agent pickups on either side.")
     st.session_state.setdefault("trade_mode", "Find trades")  # here, not default=, so Check this one can set it
     mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], key="trade_mode",
                                 label_visibility="collapsed")
@@ -419,7 +419,7 @@ def player_label(p: PlayerView) -> str:
 
 def check_trade(cfg: Config, scout: Snapshot) -> None:
     """Pick both sides from the rosters, so every name is a real player on the right team.
-    Any number a side: a 3-for-1 makes room by dropping your weakest or adding free agents."""
+    Any number a side: a 3-for-1 makes room by dropping your weakest or leaves spots open."""
     teams = {}
     for p in scout.other_rostered:
         teams.setdefault(p.team_id, []).append(p)
@@ -441,7 +441,7 @@ def check_trade(cfg: Config, scout: Snapshot) -> None:
                              key=f"check_get_{tid}")
     if not give or not get:
         st.caption("Pick at least one player a side. Uneven trades are fine: the side with more players "
-                   "drops its weakest, the side with fewer picks up the best free agents.")
+                   "drops its weakest, the side with fewer leaves the spots open. Free agents never count.")
         return
     # The first check reads every roster's recent form; after that it updates as you pick.
     if not st.session_state.get("trade_data_loaded"):
@@ -465,7 +465,7 @@ def show_evaluation(e: Evaluation) -> None:
     get = " and ".join(v.player.name for v in t.get)
     st.subheader(f"{give} for {get}", anchor=False)
     VERDICT_BOX[e.verdict](md(evaluation_headline(e)))
-    st.markdown("**With roster moves**")
+    st.markdown("**The trade alone**")
     row = st.container(horizontal=True)
     row.metric("For you", f"{t.gain:+.1f}/wk", border=True, help=LINEUP_HELP)
     row.metric("To them", f"{t.their_gain:+.1f}/wk", border=True, help=THEM_HELP)

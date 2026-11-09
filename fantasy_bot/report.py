@@ -222,19 +222,15 @@ def render(r: Report) -> str:
 
 
 def pickups_line(t) -> str:
-    """How much of each side's weekly number comes from the free agents the trade has it pick
-    up, leaving out pickups it'd make without the trade too."""
-    parts = []
-    if t.new_add:
-        parts.append(f"{t.fa_gain:+.1f} of your {t.gain:+.1f}/week")
-    if t.their_new_add:
-        parts.append(f"{t.their_fa_gain:+.1f} of their {t.their_gain:+.1f}/week")
-    return f"Free agent pickups make up {' and '.join(parts)}."
+    """What each side would be up with the free agents it could pick up after the trade. For
+    reference only: a trade's value leaves free agents out."""
+    return (f"With free agent pickups too (not counted): {t.moves_gain:+.1f}/week for you, "
+            f"{t.their_moves_gain:+.1f}/week to them.")
 
 
 def breakdown(t) -> str:
-    """Face value next to the weekly number, and the part free agents make up: a trade that
-    only works because of a waiver pickup is a different trade from one that works on talent."""
+    """Face value next to the weekly number, and what free agents would add on top, which a
+    trade's value never counts: a waiver pickup is a move either side can make without it."""
     line = f"Face value (the players over a free agent pickup): {t.face:+.1f}/week for you, {t.their_face:+.1f}/week to them"
     if t.new_add or t.their_new_add:
         line += f". {pickups_line(t)[:-1]}"
@@ -244,7 +240,8 @@ def breakdown(t) -> str:
 def bar_text(min_gain: float, fairness: float) -> str:
     """What a listed trade has to do: help your lineup, not lose you the trade, and, unless
     you've stopped asking, be fair enough to them."""
-    you = f"adds {min_gain:g}+ fpts/week for you without losing you the trade at face value"
+    you = (f"adds {min_gain:g}+ fpts/week for you on the players alone, no free agents, without losing you "
+           "the trade at face value")
     if fairness == float("inf"):
         return you
     return f"{you}, and {their_bar(fairness)}"
@@ -254,8 +251,8 @@ def their_bar(fairness: float) -> str:
     """What a trade has to do for the other team at face value, from trade_fairness: above 0 it may be
     that much worse for them."""
     if fairness > 0:
-        return f"is no more than {fairness:g} fpts/week worse for them at face value"
-    return "is at least even for them at face value"
+        return f"is no more than {fairness:g} fpts/week worse for them, on the players alone and at face value"
+    return "is at least even for them, on the players alone and at face value"
 
 
 def _trade_head(i: int, t) -> str:
@@ -275,10 +272,10 @@ def render_trades(r: TradeReport) -> str:
         "Each player has two values: *now* is the daily scout's, recent form first, which is what other "
         "managers go by. *Rest of season* leans on his season and ESPN's projection. Trades are scored with "
         "your best lineup each day: rest of season values for you; for them, a blend of now and rest of "
-        "season, since managers go by recent form but plan ahead too. Free agents, and players picked up off "
-        "waivers, count at rest of season value on both sides: a hot week off waivers is a streamer, not a "
-        "long-term piece. Face value counts each player over a free agent either manager could pick up, so "
-        "waiver-level players are worth about nothing in a trade.",
+        "season, since managers go by recent form but plan ahead too. A trade is valued on the players "
+        "alone: the side with more drops its weakest, the side with fewer leaves the spots open, and no free "
+        "agent is counted on either side. Face value counts each player over a free agent either manager "
+        "could pick up, so waiver-level players are worth about nothing in a trade.",
         "",
         f"Replacement level: ~{r.replacement:.1f} fpts/g, the third best free agent on rest of season value. "
         "Players near it count for little at face value, however many fpts they score.",
@@ -319,12 +316,12 @@ VERDICTS = {
 def evaluation_headline(e: Evaluation) -> str:
     """The verdict in one line: what it does for you, then whether they'd go for it."""
     t = e.trade
-    you = (f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you with roster moves ({t.total:+.0f} over the "
+    you = (f"{VERDICTS[e.verdict]}: ~{t.gain:+.1f} fpts/week for you ({t.total:+.0f} over the "
            f"rest of the season), {t.face:+.1f}/week at face value.")
     if e.accepts:
-        them = f"They should go for it: {t.their_face:+.1f}/week for them at face value ({t.their_gain:+.1f} with roster moves)."
+        them = f"They should go for it: {t.their_gain:+.1f}/week for them ({t.their_face:+.1f} at face value)."
     else:
-        them = f"They'd likely say no: {t.their_face:+.1f}/week for them at face value ({t.their_gain:+.1f} with roster moves)."
+        them = f"They'd likely say no: {t.their_gain:+.1f}/week for them ({t.their_face:+.1f} at face value)."
     return f"{you} {them}"
 
 
@@ -343,12 +340,12 @@ def render_evaluation(e: Evaluation) -> str:
         f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now). Face value counts each "
         f"player over ~{e.replacement:.1f}/g, the third best free agent.",
         "",
-        "**Face value vs with roster moves**",
+        "**Lineups vs face value**",
+        f"- Lineups, only games that make the best lineup each day, the side with more players dropping its "
+        f"weakest and no free agents: {t.gain:+.1f}/week for you, {t.their_gain:+.1f}/week to them.",
         f"- Face value, the players in the deal alone, each over a free agent pickup, every game counted: "
         f"{t.face:+.1f}/week for you, "
         f"{t.their_face:+.1f}/week to them.",
-        f"- With roster moves, only games that make the best lineup each day, after drops and free agent "
-        f"pickups: {t.gain:+.1f}/week for you, {t.their_gain:+.1f}/week to them.",
     ]
     if t.new_add or t.their_new_add:
         lines.append(f"- {pickups_line(t)}")

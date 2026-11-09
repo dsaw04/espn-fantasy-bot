@@ -326,7 +326,7 @@ def test_rejects_an_uneven_or_cross_team_trade_built_by_hand():
 def test_render_evaluation_is_readable():
     text = render_evaluation(evaluate_trade(league(), cfg(), [1], [10]))
     assert text.startswith("**Trade check**: Hot Guard to Rival for Cold Wing")
-    assert "fpts/week for you" in text and "for them at face value" in text and "**Details**" in text
+    assert "fpts/week for you" in text and "for them (" in text and "at face value" in text and "**Details**" in text
     print(text)
 
 
@@ -411,8 +411,8 @@ def test_adding_a_player_never_makes_a_deal_look_worse_to_them():
     snap.my_roster[4].fpts = {k: 10 for k in snap.my_roster[4].fpts}  # Bench Guy, now worse than the 16/g free agent
     one_for_two = evaluate_trade(snap, c, [1], [10, 13], alternatives=False).trade  # they get an open spot
     two_for_two = evaluate_trade(snap, c, [1, 5], [10, 13], alternatives=False).trade  # Bench Guy too
-    assert names(one_for_two.their_add) == ["Free Agent"]
-    assert "Bench Guy" in names(two_for_two.their_drop) and names(two_for_two.their_add) == ["Free Agent"]
+    assert names(one_for_two.their_add) == ["Free Agent"]  # listed, not counted
+    assert one_for_two.their_drop == [] and two_for_two.their_drop == []  # even swap: nobody to cut
     assert two_for_two.their_gain >= one_for_two.their_gain - 1e-9
 
 
@@ -526,19 +526,18 @@ def test_a_free_agent_goes_to_one_side_only():
     for p in (snap.my_roster[2], snap.my_roster[4]):  # Steady Center and Bench Guy, now 10/g scrubs
         p.fpts = {k: 10 for k in p.fpts}
     snap.free_agents.append(steady(32, "Steady FA", G, 18, owner="fa"))
-    # Two scrubs for Cold Wing: you fill the open spot, and they cut both scrubs, the second for a free agent.
+    # Two scrubs for Cold Wing. The trade alone: they cut one scrub to make room, you leave a spot open.
     m = _Market(snap, c)
     d = m.quick_one(2, [snap.my_roster[2], snap.my_roster[4]], [snap.other_rostered[0]])
-    assert names_of(d.add) == ["Steady FA"] and names_of(d.their_add) == ["Free Agent"]
-    assert set(names_of(d.their_drop)) == {"Steady Center", "Bench Guy"}
-    # You'd swap both scrubs for those free agents without a trade: the pickup is listed, since you'd
-    # make it, but marked as one you'd make anyway and not credited to the trade.
+    assert len(d.mine) == len(snap.my_roster) - 1 and len(d.their_drop) == 1
+    assert names_of(d.their_drop)[0] in {"Steady Center", "Bench Guy"}
+    # With free agents you'd fill the spot and they'd cut the other scrub for one: listed, not counted.
     e = evaluate_trade(snap, c, [3, 5], [10], alternatives=False)
     t = e.trade
-    assert names(t.add) == ["Steady FA"] and t.anyway == {32} and t.new_add == [] and t.fa_gain == 0
+    assert names(t.add) == ["Steady FA"] and t.anyway == {32} and t.new_add == []
+    assert names(t.their_add) == ["Free Agent"]
     assert any(n.startswith("No trade needed: drop Steady Center") for n in e.notes)
-    assert any("Steady FA (~18.0/g), a pickup you could make without the trade too" in r for r in t.reasons)
-    assert "of your" not in render_evaluation(e)  # no share of your gain is put down to pickups
+    assert any("Steady FA (~18.0/g) with or without the trade (not counted)" in r for r in t.reasons)
 
 
 # ---- trades with one team ----------------------------------------------------------------------
@@ -587,11 +586,11 @@ from fantasy_bot.report import bar_text, their_bar  # noqa: E402
 
 
 def test_bar_wording():
-    assert their_bar(0) == "is at least even for them at face value"
-    assert their_bar(4) == "is no more than 4 fpts/week worse for them at face value"
-    assert bar_text(3, 0) == ("adds 3+ fpts/week for you without losing you the trade at face value, "
-                              "and is at least even for them at face value")
-    assert bar_text(3, float("inf")) == "adds 3+ fpts/week for you without losing you the trade at face value"
+    assert their_bar(0) == "is at least even for them, on the players alone and at face value"
+    assert their_bar(4) == "is no more than 4 fpts/week worse for them, on the players alone and at face value"
+    you = "adds 3+ fpts/week for you on the players alone, no free agents, without losing you the trade at face value"
+    assert bar_text(3, 0) == f"{you}, and is at least even for them, on the players alone and at face value"
+    assert bar_text(3, float("inf")) == you
 
 
 def test_nothing_listed_loses_you_the_trade():
@@ -622,7 +621,7 @@ def test_a_trade_that_helps_your_lineup_but_loses_on_talent_is_flagged():
 
 def test_not_asking_them_still_says_whether_they_would_accept():
     e = evaluate_trade(league(), cfg(trade_fairness=float("inf")), [1], [10], alternatives=False)
-    assert e.accepts == (e.trade.their_face >= 0)
+    assert e.accepts == (e.trade.their_face >= 0 and e.trade.their_gain >= 0)
 
 
 def test_team_records():
@@ -642,42 +641,45 @@ def test_face_value_is_the_players_alone():
     above = lambda p: m.above(m.ros_lineups, p)
     assert above(hot) == pytest.approx(m.season(hot) * (m.ros(hot) - 16) / m.ros(hot))
     assert t.face == pytest.approx((above(cold) - above(hot)) / m.weeks)
-    assert t.fa_gain == 0 and t.their_fa_gain == 0
+    assert t.add == [] and t.their_add == []
     # Everyone starts on a 5-man roster with 6 spots, and both play the same games, so the two agree.
     assert t.gain == pytest.approx(t.face)
 
 
-def test_free_agent_pickups_are_split_out():
+def test_free_agent_pickups_never_count_toward_a_trade():
     snap, c = league(), cfg()
     m = _Market(snap, c)
-    # Hot Guard and Steady Forward for Cold Wing: your open spot goes to a free agent.
+    # Hot Guard and Steady Forward for Cold Wing: your open spot could go to a free agent, but the
+    # trade is valued with it left open.
     t = evaluate_trade(snap, c, [1, 2], [10], alternatives=False).trade
-    assert names(t.add) == ["Free Agent"] and t.fa_gain > 0
+    assert names(t.add) == ["Free Agent"]
     hot, fwd, cold = snap.my_roster[0], snap.my_roster[1], snap.other_rostered[0]
     above = lambda p: m.above(m.ros_lineups, p)
     assert t.face == pytest.approx((above(cold) - above(hot) - above(fwd)) / m.weeks)
     raw = (m.season(cold) - m.season(hot) - m.season(fwd)) / m.weeks
-    assert t.gain == pytest.approx(raw + t.fa_gain)  # everyone starts, so the gap is the pickup
+    assert t.gain == pytest.approx(raw)  # everyone starts, so it's just the players
+    assert t.moves_gain > t.gain  # the pickup is shown on the side
 
 
 def test_reports_show_face_value():
     snap, c = league(), cfg()
     text = render_evaluation(evaluate_trade(snap, c, [1, 2], [10], alternatives=False))
-    assert "**Face value vs with roster moves**" in text and "Free agent pickups make up +" in text
+    assert "**Lineups vs face value**" in text and "With free agent pickups too (not counted):" in text
     text = render_search(search_trades(league(), cfg(untouchable=["Untouchable Star"]), team_id=2))
     assert "Face value (the players over a free agent pickup):" in text
     assert "Face value (the players over a free agent pickup):" in render_trades(
         build_trades(league(), cfg(untouchable=["Untouchable Star"])))
 
 
-def test_the_bar_for_them_is_face_value_not_their_lineup():
+def test_a_free_agent_never_makes_a_trade_look_good_to_them():
     snap, c = league(), cfg()
     snap.free_agents.append(steady(35, "Great FA", F, 30, owner="fa"))
-    # Hot Guard for Cold Wing and Rival Guard: on their lineup it's a gain, only because their open
-    # spot goes to a 30/g free agent. At face value they give up more than they get.
+    # Hot Guard for Cold Wing and Rival Guard: it only looks good for them if their open spot goes
+    # to a 30/g free agent. The trade alone costs them, and that's what they're shown.
     e = evaluate_trade(snap, c, [1], [10, 13], alternatives=False)
     t = e.trade
-    assert names(t.their_add) == ["Great FA"] and t.their_gain > 0 > t.their_face
+    assert names(t.their_add) == ["Great FA"] and t.their_moves_gain > 0 > t.their_gain
+    assert t.their_face < 0
     assert not e.accepts and "They'd likely say no" in render_evaluation(e)
     listed = search_trades(snap, cfg(trade_min_gain=-1000), [1], team_id=2).trades
     assert not any(set(names(x.get)) == {"Cold Wing", "Rival Guard"} and names(x.give) == ["Hot Guard"] for x in listed)
@@ -694,15 +696,14 @@ def test_a_free_agent_you_could_add_anyway_is_no_part_of_any_trade():
     r = build_trades(snap, c)
     assert r.before.startswith("No trade needed: drop Bench Guy (~18.0/g) for Great FA (~30.0/g)")
     assert r.before in render_trades(r)
-    assert r.trades and all(t.fa_gain == 0 and "Great FA" not in names(t.new_add) for t in r.trades)
-    # Hot Guard for Cold Wing, against your roster with Great FA already in for Bench Guy.
+    assert r.trades and all("Great FA" not in names(t.new_add) for t in r.trades)
+    # Hot Guard for Cold Wing: valued on your roster as it is, Great FA nowhere in it.
     t = evaluate_trade(snap, c, [1], [10], alternatives=False).trade
     hot, cold = snap.my_roster[0], snap.other_rostered[0]
-    after = [p for p in m.base_me if p.id != hot.id] + [cold]
-    assert t.gain == pytest.approx((m.ros_lineups.total(after) - m.my_before) / m.weeks)
-    # Both halves of the move are listed, the pickup marked as one you'd make anyway.
-    assert names(t.drop) == ["Bench Guy"] and names(t.add) == ["Great FA"]
-    assert t.new_add == [] and t.fa_gain == 0
+    after = [p for p in snap.my_roster if p.id != hot.id] + [cold]
+    assert t.gain == pytest.approx((m.ros_lineups.total(after) - m.ros_lineups.total(snap.my_roster)) / m.weeks)
+    # The pickup is listed, marked as one you'd make anyway; nobody is cut for the trade itself.
+    assert t.drop == [] and names(t.add) == ["Great FA"] and t.new_add == []
 
 
 def test_without_a_better_free_agent_there_is_no_move_before_trading():

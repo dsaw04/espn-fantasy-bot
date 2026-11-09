@@ -18,11 +18,13 @@ Your side uses rest of season values. Their side blends now and rest of season v
 agents, and players someone picked up off waivers, count at rest of season value on both
 sides: a hot week off waivers makes a streamer, not a long-term piece.
 
-A side that ends up with more players drops its weakest, one with fewer picks up the best
-free agent, and either side swaps its weakest player for a free agent who's clearly better.
-That last move needs no trade, so each side is measured against its roster after making it
-anyway: a trade gets credit only for the pickups it makes possible, never for a waiver move
-you could make today.
+A trade's value to each side is the players alone: each roster as it stands, the side that
+ends up with more players drops its weakest, and the side with fewer leaves the spots open.
+No free agent is picked up on either side. A 3-for-1 that only works for them because they
+fill two open spots off waivers isn't a trade that helps them; the waiver moves are theirs
+to make anyway. What free agents would add is worked out too (the side with fewer picks up
+the best ones, either side swaps its weakest for one who's clearly better, measured after
+the moves it would make without the trade) and listed, but never counted.
 
 Face value, the bar for whether you lose the trade and whether they'd take it, counts each
 player's worth over a replacement: the kind of player either manager could pick up for free.
@@ -74,11 +76,13 @@ class Trade:
     team_name: str
     give: List[Valued]
     get: List[Valued]
-    gain: float  # fpts per week your best lineups add over the rest of the season, on rest of season values
+    # The trade alone, no free agents on either side: fpts per week your best lineups add
+    # over the rest of the season, on rest of season values.
+    gain: float
     total: float  # the same over the whole rest of the season
-    their_gain: float  # fpts per week their best lineups add, the way they'd value it (_Market.their)
+    their_gain: float  # fpts per week their best lineups add, the way they'd value it (_Market.their), no free agents
     drop: List[Valued] = field(default_factory=list)  # who you'd drop to make room
-    add: List[Valued] = field(default_factory=list)  # free agents you'd pick up with open spots
+    add: List[Valued] = field(default_factory=list)  # free agents you could pick up after it: listed, not counted
     their_drop: List[Valued] = field(default_factory=list)
     their_add: List[Valued] = field(default_factory=list)
     reasons: List[str] = field(default_factory=list)
@@ -86,10 +90,10 @@ class Trade:
     # counted, nobody dropped or picked up. Yours on rest of season values, theirs their way.
     face: float = 0.0
     their_face: float = 0.0
-    # How much of gain and their_gain the free agent pickups make up: each side's best
-    # lineups with the pickups, less without them. 0 when a side picks nobody up.
-    fa_gain: float = 0.0
-    their_fa_gain: float = 0.0
+    # gain and their_gain with the free agent moves each side would make after the trade, against
+    # its roster after the moves it'd make anyway. For reference only: never what a trade is judged on.
+    moves_gain: float = 0.0
+    their_moves_gain: float = 0.0
     # Pickups in add / their_add that side would make without the trade too: listed, since
     # they're part of what you'd really do, but not credited to the trade.
     anyway: Set[int] = field(default_factory=set)
@@ -276,12 +280,10 @@ class _Deal:
     ours: float  # quick estimate of fpts per week for you, every game counted as a start
     give: tuple
     get: tuple
-    mine: List[PlayerView]
+    mine: List[PlayerView]  # your roster after the trade alone, no free agents
     drop: List[PlayerView]
-    add: List[PlayerView]
     theirs: List[PlayerView]
     their_drop: List[PlayerView]
-    their_add: List[PlayerView]
 
 
 class _Market:
@@ -312,12 +314,21 @@ class _Market:
         self.teams: Dict[int, List[PlayerView]] = {}
         for p in snap.other_rostered:
             self.teams.setdefault(p.team_id, []).append(p)
-        # Your roster after the free agent moves you'd make anyway: what every trade is measured against.
+        # A trade is measured against the rosters as they are: no free agent moves on either side.
+        self.my_now = self.ros_lineups.total(self.me)
+        self.my_above = sum(self.above(self.ros_lineups, p) for p in self.me)
+        self._their_now: Dict[int, float] = {}
+        # Your roster after the free agent moves you'd make anyway: what moves_gain is measured against.
         self.base_me, self.base_drop, self.base_add = _upgrade(self.me, self.safe, self.season, iter(self.fa_ros),
                                                                self.ros)
         self.my_before = self.ros_lineups.total(self.base_me)
-        self.my_solo = sum(self.ros_lineups.solo(p) for p in self.base_me)
         self._their_base: Dict[int, Tuple[List[PlayerView], Set[int], Set[int], float]] = {}
+
+    def their_now(self, tid: int) -> float:
+        """Their best lineups on their roster as it is, the way they'd value players."""
+        if tid not in self._their_now:
+            self._their_now[tid] = self.their_lineups.total(self.teams[tid])
+        return self._their_now[tid]
 
     def their_base(self, tid: int) -> Tuple[List[PlayerView], Set[int], Set[int], float]:
         """Their roster after the free agent moves they'd make anyway, less the ones you'd take:
@@ -336,8 +347,8 @@ class _Market:
         moves = ", ".join(f"drop {d.name} (~{self.ros(d):.1f}/g) for {a.name} (~{self.ros(a):.1f}/g)"
                           for d, a in zip(self.base_drop, self.base_add))
         gain = (self.my_before - self.ros_lineups.total(self.me)) / self.weeks
-        return (f"No trade needed: {moves}, {gain:+.1f} fpts/week. Every trade here is measured against your "
-                "roster after that move, so none gets credit for it.")
+        return (f"No trade needed: {moves}, {gain:+.1f} fpts/week. Trades here are valued on the players alone, "
+                "so none gets credit for a free agent move.")
 
     def now(self, p: PlayerView) -> float:
         return self.scorer.base(p)
@@ -376,14 +387,16 @@ class _Market:
 
     def quick(self, tid: int, deals: Iterable[Tuple[tuple, tuple]]) -> List[_Deal]:
         """Every deal you win at face value, fair enough to them at face value (both exact
-        and cheap, so they're checked first), that helps you on a quick estimate, which counts
-        every game as a start. The full scoring is too slow for every deal."""
+        and cheap, so they're checked first), that helps you on a quick estimate: every game
+        counted as a start, each player for what he scores over replacement level, so a bench
+        player left out of a 2-for-1 costs about what he'd really cost your lineups. The full
+        scoring, which is what a trade is judged on, is too slow for every deal."""
         out = []
         for give, get in deals:
             if self.my_face(give, get) < 0 or self.their_face(give, get) < -self.cfg.trade_fairness:
                 continue
             d = self.quick_one(tid, give, get)
-            d.ours = (sum(self.ros_lineups.solo(p) for p in d.mine) - self.my_solo) / self.weeks
+            d.ours = (sum(self.above(self.ros_lineups, p) for p in d.mine) - self.my_above) / self.weeks
             if d.ours > 0:
                 out.append(d)
         return out
@@ -406,49 +419,42 @@ class _Market:
         return (sum(map(above, give)) - sum(map(above, get))) / self.weeks
 
     def quick_one(self, tid: int, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> _Deal:
-        """One deal put back to size on both sides, ready to score, whatever the quick estimate."""
-        mine, drop, add = _swap(self.me, give, get, self.safe, self.ros, self.fa_ros, long=self.season)
-        # A free agent you'd pick up isn't there for them too.
-        theirs, tdrop, tadd = _swap(self.teams[tid], get, give, set(), self.their, self.fa_ros,
-                                    {p.id for p in add}, self.season)
-        return _Deal(0.0, tuple(give), tuple(get), mine, drop, add, theirs, tdrop, tadd)
+        """One deal put back to size on both sides with no free agents: the side with more
+        players drops its weakest, the side with fewer leaves the spots open."""
+        mine, drop, _ = _swap(self.me, give, get, self.safe, self.ros, ())
+        theirs, tdrop, _ = _swap(self.teams[tid], get, give, set(), self.their, ())
+        return _Deal(0.0, tuple(give), tuple(get), mine, drop, theirs, tdrop)
 
     def score(self, tid: int, d: _Deal) -> Trade:
-        """A deal scored in full, with the best lineup each day, and at face value. Both sides
-        against their rosters after the free agent moves they'd make anyway. Every drop and
-        pickup is listed, but only pickups the trade itself brings count toward fa_gain."""
+        """A deal scored in full, with the best lineup each day, and at face value. gain and
+        their_gain are the trade alone, against the rosters as they are. Then the same deal with
+        the free agent moves each side would make, for moves_gain: listed, never counted."""
+        total = self.ros_lineups.total(d.mine) - self.my_now
+        their_gain = (self.their_lineups.total(d.theirs) - self.their_now(tid)) / self.weeks
+        mine, _, add = _swap(self.me, d.give, d.get, self.safe, self.ros, self.fa_ros, long=self.season)
+        # A free agent you'd pick up isn't there for them too.
+        theirs, _, tadd = _swap(self.teams[tid], d.get, d.give, set(), self.their, self.fa_ros,
+                                _ids_of(add), self.season)
         _, _, their_added, their_before = self.their_base(tid)
-        total = self.ros_lineups.total(d.mine) - self.my_before
-        their_gain = (self.their_lineups.total(d.theirs) - their_before) / self.weeks
-        anyway = _ids_of(d.add) & _ids_of(self.base_add)
-        their_anyway = _ids_of(d.their_add) & their_added
         v = self.val
         return Trade(
             tid, self.team_name(tid), [v(p) for p in d.give], [v(p) for p in d.get],
-            total / self.weeks, total, their_gain, [v(p) for p in d.drop], [v(p) for p in d.add],
-            [v(p) for p in d.their_drop], [v(p) for p in d.their_add],
+            total / self.weeks, total, their_gain, [v(p) for p in d.drop], [v(p) for p in add],
+            [v(p) for p in d.their_drop], [v(p) for p in tadd],
             face=self.my_face(d.give, d.get),
             their_face=self.their_face(d.give, d.get),
-            fa_gain=self._pickups(self.ros_lineups, d.mine, [p for p in d.add if p.id not in anyway]),
-            their_fa_gain=self._pickups(self.their_lineups, d.theirs,
-                                        [p for p in d.their_add if p.id not in their_anyway]),
-            anyway=anyway, their_anyway=their_anyway,
+            moves_gain=(self.ros_lineups.total(mine) - self.my_before) / self.weeks,
+            their_moves_gain=(self.their_lineups.total(theirs) - their_before) / self.weeks,
+            anyway=_ids_of(add) & _ids_of(self.base_add), their_anyway=_ids_of(tadd) & their_added,
         )
 
-    def _pickups(self, lineups: Lineups, roster: List[PlayerView], add: List[PlayerView]) -> float:
-        """Fpts per week the free agents added to a roster score in its best lineups: the
-        lineups with them, less the lineups without."""
-        if not add:
-            return 0.0
-        added = {p.id for p in add}
-        return (lineups.total(roster) - lineups.total([p for p in roster if p.id not in added])) / self.weeks
-
     def acceptable(self, t: Trade) -> bool:
-        """Worth listing: it adds min_gain to your lineups, you win it at face value (you
-        never give up more than you get, so you're not feeding anyone), and it's fair enough
-        to them at face value, no worse than trade_fairness (infinite: they're not asked)."""
-        return (t.gain >= self.cfg.trade_min_gain and t.face >= 0
-                and t.their_face >= -self.cfg.trade_fairness)
+        """Worth listing: the trade alone adds min_gain to your lineups and is no worse than
+        trade_fairness to theirs (infinite: they're not asked), free agents left out on both
+        sides, and you win it at face value while they find it fair enough at face value."""
+        fair = self.cfg.trade_fairness
+        return (t.gain >= self.cfg.trade_min_gain and t.their_gain >= -fair
+                and t.face >= 0 and t.their_face >= -fair)
 
 
 def build_trades(snap: Snapshot, cfg: Config) -> TradeReport:
@@ -550,10 +556,9 @@ def _pickups_reason(who: str, adds: Sequence[Valued], anyway: Set[int]) -> List[
     old = [v for v in adds if v.player.id in anyway]
     out = []
     if new:
-        out.append(f"{who}'d pick up free agent {_names(new)}, valued over the rest of the season since he's a streamer")
+        out.append(f"{who} could then pick up free agent {_names(new)} (not counted in the trade's value)")
     if old:
-        out.append(f"{who}'d pick up free agent {_names(old)}, a pickup {who} could make without the trade too, "
-                   "so the trade isn't credited with it")
+        out.append(f"{who} could pick up free agent {_names(old)} with or without the trade (not counted)")
     return out
 
 
@@ -687,10 +692,10 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
     """Score a trade you name the way the trade scout scores the ones it finds: your best
     lineups over the rest of the season on rest of season values, theirs on a blend of now
     and rest of season (how it looks to them) and on rest of season values alone (what it
-    really does for them). Any
-    number of players a side: the side that ends up with more drops its weakest, the side
-    with fewer picks up the best free agents. Then, unless alternatives is False, the best
-    other trades with the same team built around the players you chose to send."""
+    really does for them). Any number of players a side: the side that ends up with more
+    drops its weakest, the side with fewer leaves the spots open, since free agents aren't
+    part of a trade's value. Then, unless alternatives is False, the best other trades with
+    the same team built around the players you chose to send."""
     if not give_ids or not get_ids:
         raise TradeInputError("Name at least one player on each side.")
     me = snap.roster_for_moves()
@@ -712,10 +717,9 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
     roster = m.teams[tid]
     d = m.quick_one(tid, give, get)
     t = m.score(tid, d)
-    # What it really does for them: their side on rest of season values, against their roster
-    # after the free agent moves they'd make anyway.
-    theirs_ros, _, _ = _swap(roster, get, give, set(), m.ros, m.fa_ros, _ids_of(d.add), m.season)
-    their_ros_gain = (m.ros_lineups.total(theirs_ros) - m.ros_lineups.total(m.their_base(tid)[0])) / m.weeks
+    # What it really does for them: their side on rest of season values, no free agents.
+    theirs_ros, _, _ = _swap(roster, get, give, set(), m.ros, ())
+    their_ros_gain = (m.ros_lineups.total(theirs_ros) - m.ros_lineups.total(roster)) / m.weeks
     t.reasons = _reasons(t, snap)
 
     out = list(notes)
@@ -730,10 +734,10 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
     # Whether they'd take it: even or better for them at face value, or within fairness when
     # that's set to allow bolder offers. Not asking (infinite fairness) doesn't change the answer.
     slack = cfg.trade_fairness if 0 < cfg.trade_fairness < float("inf") else 0.0
-    accepts = t.their_face >= -slack
+    accepts = t.their_face >= -slack and t.their_gain >= -slack
     if t.face < 0:
         out.append(f"You lose this trade: you give up {-t.face:.1f} fpts/week more than you get at face value. "
-                   "Any gain for you comes from lineup fit, drops and free agent pickups, not the players.")
+                   "Any gain for you comes from lineup fit, not the players.")
     days = m.days
     return Evaluation(
         t, their_ros_gain, len(days), snap.period_dates.get(days[-1]) if days else None,
