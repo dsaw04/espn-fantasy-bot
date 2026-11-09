@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Sequence
 
 import requests
 
@@ -10,7 +10,7 @@ from .model import n_games
 from .history import brier
 from .lineup import TodayPlan
 from .recommend import HASHTAG_WINDOWS, Report
-from .trade import Evaluation, TradeReport, form, shape_label
+from .trade import Evaluation, TradeReport, TradeSearch, form, shape_label
 
 
 WEAKEST_SHOWN = 5
@@ -312,6 +312,48 @@ def render_evaluation(e: Evaluation) -> str:
             lines += [f"   - {r}" for r in a.reasons]
     else:
         lines.append(f"- {no_alternatives(e)}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _either(names: List[str]) -> str:
+    return " or ".join(names) if len(names) <= 2 else ", ".join(names[:-1]) + f" or {names[-1]}"
+
+
+def search_subject(s: TradeSearch) -> str:
+    """'sending Miller', 'getting Trae Young', or 'sending Miller for Trae Young'."""
+    parts = []
+    if s.core:
+        parts.append(f"sending {_either(s.core)}")
+    if s.targets:
+        parts.append(f"getting {_either(s.targets)}" if not s.core else f"for {_either(s.targets)}")
+    return " ".join(parts)
+
+
+def search_none(s: TradeSearch) -> str:
+    even = "looks even" if s.fairness <= 0 else f"looks no more than {s.fairness:g} fpts/week worse"
+    teams = "team" if s.teams_searched == 1 else "teams"
+    return (f"None. Across {s.teams_searched} {teams}, no trade {search_subject(s)} adds {s.min_gain:g}+ "
+            f"fpts/week for you and {even} to them.")
+
+
+def render_search(s: TradeSearch, notes: Sequence[str] = ()) -> str:
+    through = f" through {s.through:%b} {s.through.day}" if s.through else ""
+    lines: List[str] = [
+        f"**{s.team_name}: trades {search_subject(s)}** (rest of season, {s.days} days{through})",
+        "",
+    ]
+    lines += [f"- {n}" for n in notes] + ([""] if notes else [])
+    if not s.trades:
+        lines.append(f"- {search_none(s)}")
+        return "\n".join(lines).rstrip() + "\n"
+    teams = "team" if s.teams_searched == 1 else "teams"
+    lines.append(f"Best across {s.teams_searched} {teams}, each judged on its own against your roster as it is:")
+    for i, t in enumerate(s.trades, 1):
+        give = " and ".join(f"**{v.player.name}**" for v in t.give)
+        get = " and ".join(f"**{v.player.name}**" for v in t.get)
+        lines.append(f"{i}. {shape_label(t)} with **{t.team_name}**: send {give} for {get}. ~{t.gain:+.1f} fpts/week "
+                     f"for you ({t.total:+.0f} over the rest of the season). To them it looks {t.their_gain:+.1f}/week.")
+        lines += [f"   - {r}" for r in t.reasons]
     return "\n".join(lines).rstrip() + "\n"
 
 

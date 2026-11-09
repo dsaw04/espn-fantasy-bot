@@ -21,10 +21,11 @@ from fantasy_bot.model import PlayerView, Snapshot, n_games
 from fantasy_bot.recommend import Report, build_report
 from fantasy_bot.report import (
     WEAKEST_SHOWN, _hashtag_rank, evaluation_headline, lineup_needs_changes, move_value, no_alternatives, render,
-    render_evaluation,
+    render_evaluation, render_search, search_none, search_subject,
 )
 from fantasy_bot.trade import (
-    Evaluation, TradeInputError, TradeReport, build_trades, evaluate_trade, form, shape_label,
+    SEARCH_PER_TEAM, Evaluation, TradeInputError, TradeReport, TradeSearch, build_trades, evaluate_trade, form,
+    search_trades, shape_label,
 )
 
 ROOT = Path(__file__).parent
@@ -138,6 +139,11 @@ def daily_report(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple) -> 
 @st.cache_data(ttl=TTL, show_spinner="Scoring trades...")
 def trade_report(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple) -> TradeReport:
     return build_trades(_snap, _cfg)
+
+
+@st.cache_data(ttl=TTL, show_spinner="Searching every team for trades around them...")
+def search(_snap: Snapshot, _cfg: Config, taken: str, settings: tuple, include: tuple) -> TradeSearch:
+    return search_trades(_snap, _cfg, include)
 
 
 @st.cache_data(ttl=TTL, show_spinner="Scoring the trade and looking for better ones with the same team...")
@@ -376,12 +382,13 @@ def trades(cfg: Config, scout: Snapshot) -> None:
     st.caption("*Now* is recent form. *Rest of season* leans on the season and ESPN's projection. Trades are "
                "scored with your best lineup each day: rest of season for you, a blend of both for them. Free "
                "agents count at rest of season value, since a hot week off waivers is a streamer.")
-    mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], default="Find trades",
+    st.session_state.setdefault("trade_mode", "Find trades")  # here, not default=, so Check this one can set it
+    mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], key="trade_mode",
                                 label_visibility="collapsed")
     if mode == "Check a trade":
         check_trade(cfg, scout)
     else:
-        find_trades(cfg)
+        find_trades(cfg, scout)
 
 
 VERDICT_BOX = {"good": st.success, "even": st.info, "bad": st.error}
@@ -404,7 +411,10 @@ def check_trade(cfg: Config, scout: Snapshot) -> None:
     by_id = {p.id: p for p in mine + scout.other_rostered}
     tids = sorted(teams, key=lambda t: scout.team_names.get(t, ""))
     with st.container(border=True):
-        tid = st.selectbox("Trade with", tids, format_func=lambda t: scout.team_names.get(t, f"team {t}"))
+        if st.session_state.get("check_team") not in tids:
+            st.session_state.check_team = tids[0]
+        tid = st.selectbox("Trade with", tids, format_func=lambda t: scout.team_names.get(t, f"team {t}"),
+                           key="check_team")
         give = st.multiselect("You send", [p.id for p in mine], format_func=lambda i: player_label(by_id[i]),
                               placeholder="Type a name", key="check_give")
         get = st.multiselect("You get", [p.id for p in sorted(teams[tid], key=lambda p: p.name)],
@@ -468,10 +478,13 @@ def show_evaluation(e: Evaluation) -> None:
 
 
 def load_trade(tid: int, give: list, get: list) -> None:
-    """Put an alternative into the pickers above. A button callback, since widget values
-    can only be set before the widgets are drawn."""
+    """Open a trade in Check a trade. A button callback, since widget values can only be set
+    before the widgets are drawn."""
+    st.session_state.trade_mode = "Check a trade"
+    st.session_state.check_team = tid
     st.session_state.check_give = give
     st.session_state[f"check_get_{tid}"] = get
+    st.session_state.trade_data_loaded = True  # the rosters are already read
 
 
 def alternatives(e: Evaluation) -> None:
@@ -487,7 +500,29 @@ def alternatives(e: Evaluation) -> None:
                     args=(a.team_id, [v.player.id for v in a.give], [v.player.id for v in a.get]))
 
 
-def find_trades(cfg: Config) -> None:
+def build_around_picker(scout: Snapshot) -> list:
+    """Players to build trades around: yours to send, theirs to get. Picked from the rosters,
+    so every name is a real player."""
+    mine = sorted(scout.roster_for_moves(), key=lambda p: p.name)
+    theirs = sorted(scout.other_rostered, key=lambda p: (scout.team_names.get(p.team_id, ""), p.name))
+    by_id = {p.id: p for p in mine + theirs}
+    mine_ids = {p.id for p in mine}
+
+    def label(i: int) -> str:
+        p = by_id[i]
+        owner = "yours" if i in mine_ids else scout.team_names.get(p.team_id, "")
+        return f"{player_label(p)} · {owner}"
+
+    return st.multiselect(
+        "Build around (optional)", [p.id for p in mine + theirs], format_func=label, key="build_around",
+        placeholder="Any player, yours or theirs",
+        help="Yours: trades with every team that send at least one of them. Theirs: trades that get you at "
+             "least one of them, from the teams that have them. Packages and uneven deals included.",
+    )
+
+
+def find_trades(cfg: Config, scout: Snapshot) -> None:
+    include = build_around_picker(scout)
     if not st.session_state.get("trades"):
         if not st.button("Find trades", type="primary", width="stretch"):
             st.caption("Reads every team's roster, so the first look takes about 30 seconds.")
@@ -495,6 +530,14 @@ def find_trades(cfg: Config) -> None:
         st.session_state.trades = True
         st.rerun()  # without the button
     snap = fetch(trade_data, cfg)
+    if include:
+        try:
+            s = search(snap, cfg, snap.now.isoformat(), trade_key(cfg), tuple(include))
+        except TradeInputError as err:
+            st.error(str(err))
+            return
+        show_search(s)
+        return
     tr = trade_report(snap, cfg, snap.now.isoformat(), trade_key(cfg))
 
     through = f" through {tr.through:%b} {tr.through.day}" if tr.through else ""
@@ -518,6 +561,24 @@ def find_trades(cfg: Config) -> None:
         for v, team in tr.buy_low:
             st.markdown(f"**{v.player.name}** · {who(v.player)} · {team} · :blue-badge[{v.gap:+.1f}/g]")
             st.caption(md(form(v)))
+
+
+def show_search(s: TradeSearch) -> None:
+    subject = search_subject(s)
+    st.subheader(f"Trades {subject}", anchor=False)
+    if not s.trades:
+        st.info(search_none(s))
+        return
+    teams = "team" if s.teams_searched == 1 else "teams"
+    through = f" through {s.through:%b} {s.through.day}" if s.through else ""
+    st.caption(f"Best across {s.teams_searched} {teams}, at most {SEARCH_PER_TEAM} with any one. Rest of season: "
+               f"{s.days} days{through}. Each is judged on its own against your roster as it is.")
+    for i, t in enumerate(s.trades, 1):
+        card = trade_card(i, t, title=f"{shape_label(t)} with {t.team_name}")
+        card.button("Check this one", key=f"search_{i}", width="stretch", on_click=load_trade,
+                    args=(t.team_id, [v.player.id for v in t.give], [v.player.id for v in t.get]))
+    with st.expander("Text report"):
+        st.code(render_search(s), language=None, wrap_lines=True)
 
 
 def main() -> None:

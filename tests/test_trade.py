@@ -158,10 +158,15 @@ def test_uneven_trades_drop_your_weakest_or_fill_the_spot_from_free_agents():
     # One for two: the open spot goes to the best healthy free agent.
     after, drop, add = _swap(me, me[1:3], theirs[:1], set(), value, pool)
     assert names_of(add) == ["Free Agent"] and not drop and len(after) == len(me)
-    # One for one: a player you just got who's worse than the best free agent is cut for him.
-    after, drop, add = _swap(me, me[1:2], theirs[4:5], set(), value, pool)  # Rival Bench (15) for a 16/g free agent
-    assert names_of(drop) == ["Rival Bench"] and names_of(add) == ["Free Agent"] and len(after) == len(me)
-    assert "Rival Bench" not in names_of(after)
+    # One for one: a player you just got is only cut for a clearly better free agent.
+    after, drop, add = _swap(me, me[1:2], theirs[4:5], set(), value, pool)  # Rival Bench (15), a 16/g free agent
+    assert not drop and not add
+    better = steady(40, "Better FA", F, 20, owner="fa")
+    after, drop, add = _swap(me, me[1:2], theirs[4:5], set(), value, [better])  # 20 is 25% more than 15
+    assert names_of(drop) == ["Rival Bench"] and names_of(add) == ["Better FA"] and len(after) == len(me)
+    # A free agent the other side already took isn't there.
+    after, drop, add = _swap(me, me[1:3], theirs[:1], set(), value, [better, pool[0]], exclude={40})
+    assert names_of(add) == ["Free Agent"]
 
 
 def names_of(ps):
@@ -432,3 +437,93 @@ def test_reads_their_recent_setting(tmp_path):
     assert load_config(toml, tmp_path / "none.toml").trade_their_recent == 0.8
     toml.write_text("[league]\nleague_id = 1\nyear = 2027\nteam_id = 3\n", encoding="utf-8")
     assert load_config(toml, tmp_path / "none.toml").trade_their_recent == 0.5
+
+
+# ---- building trades around players you pick ---------------------------------------------
+from fantasy_bot.report import render_search  # noqa: E402
+from fantasy_bot.trade import (  # noqa: E402
+    ALT_MAX_TOTAL, SEARCH_PER_TEAM, SEARCH_SHOWN, _deals_around, _Market, find_included, search_trades,
+)
+
+
+def test_deals_around_a_player_include_him_and_stay_small():
+    snap, c = league(), cfg(untouchable=["Untouchable Star"])
+    m = _Market(snap, c)
+    hot, cold = snap.my_roster[0], snap.other_rostered[0]
+    deals = list(_deals_around(m, 2, [hot], [cold]))
+    assert deals
+    for give, get in deals:
+        assert hot in give and cold in get and len(give) + len(get) <= ALT_MAX_TOTAL
+        assert "Untouchable Star" not in names_of(give)
+    shapes = {(len(g), len(t)) for g, t in deals}
+    assert {(1, 1), (1, 3), (3, 1), (2, 2)} <= shapes and (2, 3) not in shapes
+    assert len(deals) == len({(frozenset(p.id for p in g), frozenset(p.id for p in t)) for g, t in deals})  # no repeats
+
+
+def test_searches_every_team_around_your_player():
+    snap, c = league(), cfg(untouchable=["Untouchable Star"])
+    s = search_trades(snap, c, [1])  # Hot Guard
+    assert s.core == ["Hot Guard"] and s.targets == [] and s.teams_searched == 2
+    assert s.trades and len(s.trades) <= SEARCH_SHOWN
+    for t in s.trades:
+        assert "Hot Guard" in names(t.give) and t.reasons
+        assert t.gain >= c.trade_min_gain and t.their_gain >= -c.trade_fairness
+    for team in {t.team_id for t in s.trades}:
+        assert sum(t.team_id == team for t in s.trades) <= SEARCH_PER_TEAM
+    assert any(names(t.get) == ["Cold Wing"] for t in s.trades)
+
+
+def test_a_player_of_theirs_limits_the_search_to_his_team():
+    s = search_trades(league(), cfg(untouchable=["Untouchable Star"]), [10])  # Cold Wing
+    assert s.targets == ["Cold Wing"] and s.core == [] and s.teams_searched == 1
+    assert s.trades and all("Cold Wing" in names(t.get) and t.team_name == "Rival" for t in s.trades)
+
+
+def test_yours_and_theirs_together():
+    s = search_trades(league(), cfg(trade_fairness=500), [1, 20])  # Hot Guard, Slumping Big (Other Team)
+    assert s.teams_searched == 1 and s.trades
+    for t in s.trades:
+        assert "Hot Guard" in names(t.give) and "Slumping Big" in names(t.get) and t.team_name == "Other Team"
+
+
+def test_search_says_what_is_wrong():
+    with pytest.raises(TradeInputError, match="at least one"):
+        search_trades(league(), cfg(), [])
+    with pytest.raises(TradeInputError, match="free agent"):
+        search_trades(league(), cfg(), [30])
+    snap = league()
+    assert find_included(snap, ["hot guard", "Cold Wing"]) == ([1, 10], [])
+    with pytest.raises(TradeInputError, match="free agent"):
+        find_included(snap, ["Free Agent"])
+
+
+def test_render_search():
+    c = cfg(untouchable=["Untouchable Star"])
+    text = render_search(search_trades(league(), c, [1]))
+    assert text.startswith("**Mine: trades sending Hot Guard** (rest of season, 27 days through Dec 5)")
+    assert "Best across 2 teams" in text and "1-for-1 with **Rival**: send **Hot Guard** for **Cold Wing**" in text
+    text = render_search(search_trades(league(), cfg(trade_min_gain=1000), [1, 10]))
+    assert "**Mine: trades sending Hot Guard for Cold Wing**" in text
+    assert "None. Across 1 team, no trade sending Hot Guard for Cold Wing adds 1000+ fpts/week" in text
+    print(text)
+
+
+# ---- free agents who can't help, and free agents only one side can have ----------------------
+def test_a_free_agent_without_games_left_is_never_picked():
+    snap, c = league(), cfg()
+    unsigned = steady(34, "Unsigned Vet", G, 40, owner="fa")  # projected well, but no NBA team
+    unsigned.games = {}
+    snap.free_agents.append(unsigned)
+    e = evaluate_trade(snap, c, [1, 2], [10], alternatives=False)  # you get an open spot
+    assert names(e.trade.add) == ["Free Agent"]
+
+
+def test_a_free_agent_goes_to_one_side_only():
+    snap, c = league(), cfg()
+    for p in (snap.my_roster[2], snap.my_roster[4]):  # Steady Center and Bench Guy, now 10/g scrubs
+        p.fpts = {k: 10 for k in p.fpts}
+    snap.free_agents.append(steady(32, "Steady FA", G, 18, owner="fa"))
+    # Two scrubs for Cold Wing: you fill the open spot, and they cut both scrubs, the second for a free agent.
+    t = evaluate_trade(snap, c, [3, 5], [10], alternatives=False).trade
+    assert names(t.add) == ["Steady FA"] and names(t.their_add) == ["Free Agent"]
+    assert set(names(t.their_drop)) == {"Steady Center", "Bench Guy"}
