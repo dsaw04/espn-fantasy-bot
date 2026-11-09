@@ -15,19 +15,28 @@ Every trade of up to trade_max_players a side with each other team is scored the
 daily scout scores moves: by the best lineup each day, here over the rest of the season.
 Your side uses rest of season values. Their side blends now and rest of season values
 (trade_their_recent), since managers go by recent form but plan for the long run too. Free
-agents count at rest of season value on both sides: a hot week off waivers makes a streamer,
-not a long-term piece. A side that ends up with more players drops its weakest, one with
-fewer picks up the best free agent, and either side cuts a player it just got when a free
-agent is better. The top trades add the most to your fpts per week while
-looking at least even to the other team, and where the best player in the deal on current
-form goes to them: two good players for one great one looks even on paper, but managers
-rarely take it.
+agents, and players someone picked up off waivers, count at rest of season value on both
+sides: a hot week off waivers makes a streamer, not a long-term piece.
+
+A side that ends up with more players drops its weakest, one with fewer picks up the best
+free agent, and either side swaps its weakest player for a free agent who's clearly better.
+That last move needs no trade, so each side is measured against its roster after making it
+anyway: a trade gets credit only for the pickups it makes possible, never for a waiver move
+you could make today.
+
+Face value, the bar for whether you lose the trade and whether they'd take it, counts each
+player's worth over a replacement: the kind of player either manager could pick up for free.
+Two waiver-level players are worth about nothing in a trade, however many fpts they score.
+
+The top trades add the most to your fpts per week while looking at least even to the other
+team, and where the best player in the deal on current form goes to them: two good players
+for one great one looks even on paper, but managers rarely take it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from difflib import SequenceMatcher, get_close_matches
 from itertools import combinations, islice
 from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
@@ -43,6 +52,9 @@ ROS_HASHTAG = ("season", "last_30", "last_14", "last_7")
 SIGNAL = 2.0  # fpts per game between now and rest of season that makes a sell high or buy low
 SHORTLIST = 60  # trades per team scored with full lineups, picked on a quick estimate
 LISTED = 5  # sell high and buy low candidates listed
+# Replacement level: the rest of season value per game of this free agent, best first. Not the
+# very best one, since only one manager gets him.
+REPLACEMENT_RANK = 3
 
 
 @dataclass
@@ -91,6 +103,7 @@ class TradeReport:
     buy_low: List[Tuple[Valued, str]]  # other teams' players furthest below it, with the team
     min_gain: float = 0.0
     fairness: float = 0.0
+    before: Optional[str] = None  # free agent moves every trade is measured after (_Market.before_note)
 
 
 def trade_days(snap: Snapshot) -> List[int]:
@@ -105,8 +118,10 @@ class Lineups:
     values, the same way lineup.project counts them. Each day's total is cached by who
     plays that day, so scoring a trade only costs the days its players have games."""
 
-    def __init__(self, snap: Snapshot, cfg: Config, days: List[int], value: Callable[[PlayerView], float]):
+    def __init__(self, snap: Snapshot, cfg: Config, days: List[int], value: Callable[[PlayerView], float],
+                 unknown_back: Optional[date] = None):
         self.snap, self.cfg, self.days, self.value = snap, cfg, days, value
+        self.unknown_back = unknown_back  # when a player out with no return date is assumed back
         self.slots = starting_slots(snap.lineup_slots)
         self._worth: Dict[int, Dict[int, float]] = {}
         self._player: Dict[int, PlayerView] = {}
@@ -120,7 +135,7 @@ class Lineups:
             w = {}
             for sp in self.days:
                 if sp in p.games:
-                    x = availability_on(p, self.snap.period_dates.get(sp), self.cfg) * v
+                    x = availability_on(p, self.snap.period_dates.get(sp), self.cfg, self.unknown_back) * v
                     if x > 0:
                         w[sp] = x
             self._worth[p.id], self._player[p.id] = w, p
@@ -159,7 +174,31 @@ def _deals(mine: List[PlayerView], theirs: List[PlayerView], most: int) -> Itera
                     yield give, get
 
 
-CUT_EDGE = 1.25  # a player just traded for is cut only for a free agent worth this much more over the season
+CUT_EDGE = 1.25  # a player is cut only for a free agent worth this much more over the rest of the season
+
+
+def _upgrade(roster: List[PlayerView], keep: Set[int], long: Callable[[PlayerView], float],
+             free: Iterator[PlayerView]):
+    """The weakest player not in keep cut for the best free agent left in free (best first),
+    again and again, while the free agent is worth CUT_EDGE times as much over the rest of the
+    season (long). A manager doesn't cut a player out for a few days or in a slump for a waiver
+    pickup that's about as good.
+
+    No trade is needed for this, so the trade scout makes the same moves on each roster as it
+    stands to get the baseline a trade is measured against.
+
+    Returns (roster, dropped, added)."""
+    drop: List[PlayerView] = []
+    add: List[PlayerView] = []
+    best = next(free, None)
+    for p in sorted((p for p in roster if p.id not in keep), key=long):
+        if best is None or long(best) < CUT_EDGE * long(p):
+            break
+        drop.append(p)
+        add.append(best)
+        best = next(free, None)
+    cut = {p.id for p in drop}
+    return [p for p in roster if p.id not in cut] + add, drop, add
 
 
 def _swap(roster: List[PlayerView], out: Sequence[PlayerView], into: Sequence[PlayerView], keep: Set[int],
@@ -172,10 +211,8 @@ def _swap(roster: List[PlayerView], out: Sequence[PlayerView], into: Sequence[Pl
       for can be the one cut, as any manager would cut him.
     - An open spot goes to the best free agent in pool (sorted best first), skipping those
       in exclude: the ones the other side of the trade already picked up.
-    - Then a player just traded for is cut for the best free agent left, but only when the
-      free agent is worth CUT_EDGE times as much over the rest of the season (long, by
-      default value). A manager doesn't cut a player he just traded for, out for a few days
-      or in a slump, for a waiver pickup that's about as good.
+    - Then _upgrade: the weakest player left, whoever he is, for a clearly better free agent
+      (long, by default value).
 
     Returns (roster, dropped, added)."""
     long = long or value
@@ -190,19 +227,17 @@ def _swap(roster: List[PlayerView], out: Sequence[PlayerView], into: Sequence[Pl
     elif len(after) < len(roster):
         add = list(islice(free, len(roster) - len(after)))
     cut = {p.id for p in drop}
-    best = next(free, None)
-    for p in sorted((p for p in into if p.id not in cut), key=long):
-        if best is None or long(best) < CUT_EDGE * long(p):
-            break
-        drop.append(p)
-        cut.add(p.id)
-        add.append(best)
-        best = next(free, None)
-    return [p for p in after if p.id not in cut] + add, drop, add
+    after = [p for p in after if p.id not in cut] + add
+    after, more_drop, more_add = _upgrade(after, set(keep) | {p.id for p in add}, long, free)
+    return after, drop + more_drop, add + more_add
 
 
 def _ids(vs: Sequence[Valued]) -> Set[int]:
     return {v.player.id for v in vs}
+
+
+def _ids_of(ps: Iterable[PlayerView]) -> Set[int]:
+    return {p.id for p in ps}
 
 
 def _distinct(t: Trade, chosen: List[Trade]) -> bool:
@@ -241,8 +276,10 @@ class _Market:
         self._ros: Dict[int, float] = {}
         self.days = trade_days(snap)
         self.weeks = max(len(self.days), 1) / 7
-        self.ros_lineups = Lineups(snap, cfg, self.days, self.ros)  # how a trade really changes a team
-        self.their_lineups = Lineups(snap, cfg, self.days, self.their)  # how it looks to the other team
+        today = snap.period_dates.get(snap.today)
+        back = today + timedelta(days=cfg.trade_unknown_return_days) if today else None
+        self.ros_lineups = Lineups(snap, cfg, self.days, self.ros, back)  # how a trade really changes a team
+        self.their_lineups = Lineups(snap, cfg, self.days, self.their, back)  # how it looks to the other team
         self.me = snap.roster_for_moves()
         self.tradeable = droppable(snap, cfg)
         self.safe = {p.id for p in self.me} - {p.id for p in self.tradeable}  # never cut to make room
@@ -251,12 +288,36 @@ class _Market:
         # games he has left. A free agent without an NBA team has none and is never picked.
         self.fa_ros = sorted((p for p in snap.free_agents if not p.is_out and self.season(p) > 0),
                              key=self.season, reverse=True)
+        per_game = sorted(map(self.ros, self.fa_ros), reverse=True)
+        self.replacement = per_game[min(REPLACEMENT_RANK, len(per_game)) - 1] if per_game else 0.0
         self.teams: Dict[int, List[PlayerView]] = {}
         for p in snap.other_rostered:
             self.teams.setdefault(p.team_id, []).append(p)
-        self.my_before = self.ros_lineups.total(self.me)
-        self.my_solo = sum(self.ros_lineups.solo(p) for p in self.me)
-        self._their_before: Dict[int, float] = {}
+        # Your roster after the free agent moves you'd make anyway: what every trade is measured against.
+        self.base_me, self.base_drop, self.base_add = _upgrade(self.me, self.safe, self.season, iter(self.fa_ros))
+        self.my_before = self.ros_lineups.total(self.base_me)
+        self.my_solo = sum(self.ros_lineups.solo(p) for p in self.base_me)
+        self._their_base: Dict[int, Tuple[List[PlayerView], Set[int], Set[int], float]] = {}
+
+    def their_base(self, tid: int) -> Tuple[List[PlayerView], Set[int], Set[int], float]:
+        """Their roster after the free agent moves they'd make anyway, less the ones you'd take:
+        (roster, ids dropped, ids added, their best lineups on it)."""
+        if tid not in self._their_base:
+            taken = _ids_of(self.base_add)
+            roster, drop, add = _upgrade(self.teams[tid], set(), self.season,
+                                         (p for p in self.fa_ros if p.id not in taken))
+            self._their_base[tid] = (roster, _ids_of(drop), _ids_of(add), self.their_lineups.total(roster))
+        return self._their_base[tid]
+
+    def before_note(self) -> Optional[str]:
+        """The free agent moves you can make without a trade, which every trade is measured after."""
+        if not self.base_add:
+            return None
+        moves = ", ".join(f"drop {d.name} (~{self.ros(d):.1f}/g) for {a.name} (~{self.ros(a):.1f}/g)"
+                          for d, a in zip(self.base_drop, self.base_add))
+        gain = (self.my_before - self.ros_lineups.total(self.me)) / self.weeks
+        return (f"No trade needed: {moves}, {gain:+.1f} fpts/week. Every trade here is measured against your "
+                "roster after that move, so none gets credit for it.")
 
     def now(self, p: PlayerView) -> float:
         return self.scorer.base(p)
@@ -274,12 +335,19 @@ class _Market:
 
     def their(self, p: PlayerView) -> float:
         """How the other manager values a player: partly recent form, which is what managers
-        go by, partly rest of season, since they plan for the long run too. Free agents at
-        rest of season value, the same as on your side."""
-        if p.owner == "fa":
+        go by, partly rest of season, since they plan for the long run too. Free agents, and
+        players someone picked up off waivers, at rest of season value, the same as on your
+        side: a manager who passed on him on waivers won't pay for his hot week in a trade."""
+        if p.owner == "fa" or p.acquisition_type == "ADD":
             return self.ros(p)
         w = self.cfg.trade_their_recent
         return w * self.now(p) + (1 - w) * self.ros(p)
+
+    def above(self, lineups: Lineups, p: PlayerView) -> float:
+        """Fpts over the rest of the season a player scores beyond a replacement-level free agent
+        in his games, on that lineup's values: what he's worth in a trade."""
+        v = lineups.value(p)
+        return lineups.solo(p) * (v - self.replacement) / v if v > self.replacement else 0.0
 
     def val(self, p: PlayerView) -> Valued:
         return Valued(p, self.now(p), self.ros(p))
@@ -303,17 +371,20 @@ class _Market:
 
     def my_face(self, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> float:
         """Fpts per week you gain at face value on rest of season values: what you get less
-        what you send, every game counted, nobody dropped or picked up. Below 0 you lose the
-        trade: you give up more than you get, whatever it does for your lineup."""
-        solo = self.ros_lineups.solo
-        return (sum(map(solo, get)) - sum(map(solo, give))) / self.weeks
+        what you send, each over a replacement-level free agent, every game counted, nobody
+        dropped or picked up. Below 0 you lose the trade: you give up more than you get,
+        whatever it does for your lineup."""
+        above = lambda p: self.above(self.ros_lineups, p)
+        return (sum(map(above, get)) - sum(map(above, give))) / self.weeks
 
     def their_face(self, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> float:
         """Fpts per week the other team gains at face value, the way they'd value players:
-        what they get from you less what they send, every game counted, nobody dropped or
-        picked up. The bar for what they must get out of a trade (trade_fairness) is on this."""
-        solo = self.their_lineups.solo
-        return (sum(map(solo, give)) - sum(map(solo, get))) / self.weeks
+        what they get from you less what they send, each over a replacement-level free agent,
+        every game counted, nobody dropped or picked up. A player they could pick up for free
+        is worth nothing to them here. The bar for what they must get out of a trade
+        (trade_fairness) is on this."""
+        above = lambda p: self.above(self.their_lineups, p)
+        return (sum(map(above, give)) - sum(map(above, get))) / self.weeks
 
     def quick_one(self, tid: int, give: Sequence[PlayerView], get: Sequence[PlayerView]) -> _Deal:
         """One deal put back to size on both sides, ready to score, whatever the quick estimate."""
@@ -324,21 +395,25 @@ class _Market:
         return _Deal(0.0, tuple(give), tuple(get), mine, drop, add, theirs, tdrop, tadd)
 
     def score(self, tid: int, d: _Deal) -> Trade:
-        """A deal scored in full, with the best lineup each day, and at face value."""
-        if tid not in self._their_before:
-            self._their_before[tid] = self.their_lineups.total(self.teams[tid])
+        """A deal scored in full, with the best lineup each day, and at face value. Both sides
+        against their rosters after the free agent moves they'd make anyway, and only the drops
+        and pickups the trade itself brings are listed with it."""
+        _, their_dropped, their_added, their_before = self.their_base(tid)
         total = self.ros_lineups.total(d.mine) - self.my_before
-        their_gain = (self.their_lineups.total(d.theirs) - self._their_before[tid]) / self.weeks
-        mine_l, theirs_l = self.ros_lineups, self.their_lineups
+        their_gain = (self.their_lineups.total(d.theirs) - their_before) / self.weeks
+        drop = [p for p in d.drop if p.id not in _ids_of(self.base_drop)]
+        add = [p for p in d.add if p.id not in _ids_of(self.base_add)]
+        their_drop = [p for p in d.their_drop if p.id not in their_dropped]
+        their_add = [p for p in d.their_add if p.id not in their_added]
         v = self.val
         return Trade(
             tid, self.team_name(tid), [v(p) for p in d.give], [v(p) for p in d.get],
-            total / self.weeks, total, their_gain, [v(p) for p in d.drop], [v(p) for p in d.add],
-            [v(p) for p in d.their_drop], [v(p) for p in d.their_add],
+            total / self.weeks, total, their_gain, [v(p) for p in drop], [v(p) for p in add],
+            [v(p) for p in their_drop], [v(p) for p in their_add],
             face=self.my_face(d.give, d.get),
             their_face=self.their_face(d.give, d.get),
-            fa_gain=self._pickups(mine_l, d.mine, d.add),
-            their_fa_gain=self._pickups(theirs_l, d.theirs, d.their_add),
+            fa_gain=self._pickups(self.ros_lineups, d.mine, add),
+            their_fa_gain=self._pickups(self.their_lineups, d.theirs, their_add),
         )
 
     def _pickups(self, lineups: Lineups, roster: List[PlayerView], add: List[PlayerView]) -> float:
@@ -397,6 +472,7 @@ def build_trades(snap: Snapshot, cfg: Config) -> TradeReport:
         buy_low=buy_low[:LISTED],
         min_gain=cfg.trade_min_gain,
         fairness=cfg.trade_fairness,
+        before=m.before_note(),
     )
 
 
@@ -602,13 +678,17 @@ def evaluate_trade(snap: Snapshot, cfg: Config, give_ids: Sequence[int], get_ids
 
     m = _Market(snap, cfg)
     roster = m.teams[tid]
-    t = m.score(tid, m.quick_one(tid, give, get))
-    # What it really does for them: their side on rest of season values.
-    theirs_ros, _, _ = _swap(roster, get, give, set(), m.ros, m.fa_ros, _ids(t.add), m.season)
-    their_ros_gain = (m.ros_lineups.total(theirs_ros) - m.ros_lineups.total(roster)) / m.weeks
+    d = m.quick_one(tid, give, get)
+    t = m.score(tid, d)
+    # What it really does for them: their side on rest of season values, against their roster
+    # after the free agent moves they'd make anyway.
+    theirs_ros, _, _ = _swap(roster, get, give, set(), m.ros, m.fa_ros, _ids_of(d.add), m.season)
+    their_ros_gain = (m.ros_lineups.total(theirs_ros) - m.ros_lineups.total(m.their_base(tid)[0])) / m.weeks
     t.reasons = _reasons(t, snap)
 
     out = list(notes)
+    if (before := m.before_note()) is not None:
+        out.append(before)
     sent = [p.name for p in give if p.id in m.safe]  # untouchable: never cut to make room, but you chose to send him
     if sent:
         out.append(f"You've marked {' and '.join(sent)} untouchable.")
@@ -783,6 +863,7 @@ class TradeSearch:
     min_gain: float = 0.0
     fairness: float = 0.0
     partner: Optional[str] = None  # the one team searched, when you picked it
+    before: Optional[str] = None  # free agent moves every trade is measured after (_Market.before_note)
 
 
 def search_trades(snap: Snapshot, cfg: Config, include_ids: Sequence[int] = (),
@@ -831,6 +912,7 @@ def search_trades(snap: Snapshot, cfg: Config, include_ids: Sequence[int] = (),
         _explain(_pick(found, SEARCH_SHOWN, per_team), snap), len(tids),
         len(days), snap.period_dates.get(days[-1]) if days else None, cfg.trade_min_gain, cfg.trade_fairness,
         m.team_name(team_id) if team_id is not None else None,
+        m.before_note(),
     )
 
 

@@ -84,16 +84,33 @@ def minutes(p: PlayerView) -> float:
     return 0.0
 
 
-def is_out_on(p: PlayerView, day: Optional[date]) -> bool:
+SEASON_ENDING = ("season-ending", "season ending", "out for the season", "remainder of the season",
+                 "rest of the season")
+
+
+def out_for_season(p: PlayerView) -> bool:
+    note = p.injury_note.lower()
+    return any(s in note for s in SEASON_ENDING)
+
+
+def is_out_on(p: PlayerView, day: Optional[date], unknown_back: Optional[date] = None) -> bool:
+    """Out with no return date: out for good by default, which is safe over the daily scout's
+    week. Over months that writes off a star sidelined for a week or two, so the trade scout
+    passes unknown_back, the day such a player is assumed back, unless his injury note says
+    his season is over."""
     if not p.is_out:
         return False
-    if p.expected_return is None or day is None:
+    if day is None:
         return True
-    return day < p.expected_return
+    if p.expected_return is not None:
+        return day < p.expected_return
+    if unknown_back is None or out_for_season(p):
+        return True
+    return day < unknown_back
 
 
-def availability_on(p: PlayerView, day: Optional[date], cfg: Config) -> float:
-    if is_out_on(p, day):
+def availability_on(p: PlayerView, day: Optional[date], cfg: Config, unknown_back: Optional[date] = None) -> float:
+    if is_out_on(p, day, unknown_back):
         return 0.0
     if p.available_from is not None and day is not None and day < p.available_from:
         return 0.0  # still on waivers

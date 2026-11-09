@@ -56,6 +56,7 @@ fairness = 0.0             # fpts per week a trade may be worse for the other te
 their_recent = 0.5         # how much the other manager goes by recent form: 1 = recent form only, 0 = rest of season only
 shown = 5                  # trades listed
 projection_games = 20      # ESPN's projection counts as this many real games in the rest of season value
+unknown_return_days = 14   # a player out with no return date is assumed back after this many days (not for season-ending injuries)
 
 [trade.weights]
 # Rest of season value. Leans on the season and ESPN's projection, so a hot or cold couple

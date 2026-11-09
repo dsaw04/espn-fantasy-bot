@@ -175,8 +175,9 @@ def trade_key(cfg: Config) -> tuple:
 
 LINEUP_HELP = ("With roster moves: only the games that make your best lineup each day, after the drops and "
                "free agent pickups the trade needs. Face value, under it, is the players alone.")
-FACE_HELP = ("The players in the deal alone: every game they can play over the rest of the season, nobody "
-             "dropped or picked up. Ignores who'd actually start.")
+FACE_HELP = ("The players in the deal alone: every game they can play over the rest of the season, each counted "
+             "only for what he scores over a free agent either manager could pick up, nobody dropped or picked "
+             "up. Ignores who'd actually start.")
 THEM_HELP = ("How it looks to them: their players on a blend of recent form and rest of season (see Settings), "
              "free agents on rest of season")
 
@@ -584,6 +585,8 @@ def find_trades(cfg: Config, scout: Snapshot) -> None:
     through = f" through {tr.through:%b} {tr.through.day}" if tr.through else ""
     st.subheader("Top trades", anchor=False)
     st.caption(f"Rest of season: {tr.days} days{through}. Each is judged on its own against your roster as it is.")
+    if tr.before:
+        st.info(md(tr.before))
     for i, t in enumerate(tr.trades, 1):
         trade_card(i, t)
     if not tr.trades:
@@ -606,6 +609,8 @@ def find_trades(cfg: Config, scout: Snapshot) -> None:
 def show_search(s: TradeSearch) -> None:
     subject = search_subject(s)
     st.subheader(f"Trades {subject}", anchor=False)
+    if s.before:
+        st.info(md(s.before))
     if not s.trades:
         st.info(search_none(s))
         return

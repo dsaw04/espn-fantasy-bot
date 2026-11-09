@@ -358,12 +358,12 @@ def test_a_bad_trade_gets_better_ones_with_the_same_team_around_the_same_player(
 
 
 def test_alternatives_can_be_uneven():
-    # Bolder bars let in uneven deals, so each shape gets a turn. A package (you send more) only
-    # passes when what you get is worth at least as much as everything you send, which nothing on
-    # Rival is for Hot Guard plus anyone, so it's the 1-for-1s and the spreads here.
+    # Bolder bars let in uneven deals, so each shape gets a turn. Face value counts each player over
+    # a free agent pickup, so a package of yours for one better player can work: whoever you add to
+    # Hot Guard is worth little more than a waiver pickup.
     e = evaluate_trade(league(), cfg(trade_fairness=500, trade_min_gain=-500), [1], [14])
     shapes = {shape_of(len(a.give), len(a.get)) for a in e.alternatives}
-    assert shapes >= {"1-for-1", "spread"} and "package" not in shapes
+    assert shapes >= {"1-for-1", "spread", "package"}
 
 
 def test_says_none_when_no_alternative_works():
@@ -527,9 +527,13 @@ def test_a_free_agent_goes_to_one_side_only():
         p.fpts = {k: 10 for k in p.fpts}
     snap.free_agents.append(steady(32, "Steady FA", G, 18, owner="fa"))
     # Two scrubs for Cold Wing: you fill the open spot, and they cut both scrubs, the second for a free agent.
-    t = evaluate_trade(snap, c, [3, 5], [10], alternatives=False).trade
-    assert names(t.add) == ["Steady FA"] and names(t.their_add) == ["Free Agent"]
-    assert set(names(t.their_drop)) == {"Steady Center", "Bench Guy"}
+    m = _Market(snap, c)
+    d = m.quick_one(2, [snap.my_roster[2], snap.my_roster[4]], [snap.other_rostered[0]])
+    assert names_of(d.add) == ["Steady FA"] and names_of(d.their_add) == ["Free Agent"]
+    assert set(names_of(d.their_drop)) == {"Steady Center", "Bench Guy"}
+    # You'd swap both scrubs for those free agents without a trade, so the trade doesn't list them.
+    e = evaluate_trade(snap, c, [3, 5], [10], alternatives=False)
+    assert e.trade.add == [] and any(n.startswith("No trade needed: drop Steady Center") for n in e.notes)
 
 
 # ---- trades with one team ----------------------------------------------------------------------
@@ -600,15 +604,15 @@ def deep_bench():
 
 
 def test_a_trade_that_helps_your_lineup_but_loses_on_talent_is_flagged():
-    # Two 21/g guards for Cold Wing (~40 rest of season): your lineup gets better, since a guard was
-    # sitting and he fills the empty forward spot, but you give up more than you get.
-    e = evaluate_trade(deep_bench(), cfg(), [6, 7], [10], alternatives=False)
+    # Bench Guy (18/g) for Rival Bench (15/g): your lineup gets better, since guards pile up and he
+    # fills an empty forward spot, but you give up the better player.
+    e = evaluate_trade(deep_bench(), cfg(), [5], [14], alternatives=False)
     assert e.trade.gain >= 3 and e.trade.face < 0
     assert e.verdict == "feeding" and any(n.startswith("You lose this trade") for n in e.notes)
     assert "Careful, you lose this one" in render_evaluation(e)
-    found = search_trades(deep_bench(), cfg(trade_fairness=float("inf")), [6, 7], team_id=2).trades
+    found = search_trades(deep_bench(), cfg(trade_fairness=float("inf")), [5], team_id=2).trades
     assert all(t.face >= 0 for t in found)
-    assert not any(set(names(t.give)) == {"Spare Guard", "Other Spare"} and names(t.get) == ["Cold Wing"] for t in found)
+    assert not any(names(t.give) == ["Bench Guy"] and names(t.get) == ["Rival Bench"] for t in found)
 
 
 def test_not_asking_them_still_says_whether_they_would_accept():
@@ -629,9 +633,13 @@ def test_face_value_is_the_players_alone():
     m = _Market(snap, c)
     hot, cold = snap.my_roster[0], snap.other_rostered[0]
     t = evaluate_trade(snap, c, [1], [10], alternatives=False).trade
-    assert t.face == pytest.approx((m.season(cold) - m.season(hot)) / m.weeks)
+    assert m.replacement == 16  # the only healthy free agent
+    above = lambda p: m.above(m.ros_lineups, p)
+    assert above(hot) == pytest.approx(m.season(hot) * (m.ros(hot) - 16) / m.ros(hot))
+    assert t.face == pytest.approx((above(cold) - above(hot)) / m.weeks)
     assert t.fa_gain == 0 and t.their_fa_gain == 0
-    assert t.gain == pytest.approx(t.face)  # everyone starts on a 5-man roster with 6 spots, so the two agree
+    # Everyone starts on a 5-man roster with 6 spots, and both play the same games, so the two agree.
+    assert t.gain == pytest.approx(t.face)
 
 
 def test_free_agent_pickups_are_split_out():
@@ -641,8 +649,10 @@ def test_free_agent_pickups_are_split_out():
     t = evaluate_trade(snap, c, [1, 2], [10], alternatives=False).trade
     assert names(t.add) == ["Free Agent"] and t.fa_gain > 0
     hot, fwd, cold = snap.my_roster[0], snap.my_roster[1], snap.other_rostered[0]
-    assert t.face == pytest.approx((m.season(cold) - m.season(hot) - m.season(fwd)) / m.weeks)
-    assert t.gain == pytest.approx(t.face + t.fa_gain)  # everyone starts, so the gap is the pickup
+    above = lambda p: m.above(m.ros_lineups, p)
+    assert t.face == pytest.approx((above(cold) - above(hot) - above(fwd)) / m.weeks)
+    raw = (m.season(cold) - m.season(hot) - m.season(fwd)) / m.weeks
+    assert t.gain == pytest.approx(raw + t.fa_gain)  # everyone starts, so the gap is the pickup
 
 
 def test_reports_show_face_value():
@@ -650,8 +660,9 @@ def test_reports_show_face_value():
     text = render_evaluation(evaluate_trade(snap, c, [1, 2], [10], alternatives=False))
     assert "**Face value vs with roster moves**" in text and "Free agent pickups make up +" in text
     text = render_search(search_trades(league(), cfg(untouchable=["Untouchable Star"]), team_id=2))
-    assert "Face value (the players alone):" in text
-    assert "Face value (the players alone):" in render_trades(build_trades(league(), cfg(untouchable=["Untouchable Star"])))
+    assert "Face value (the players over a free agent pickup):" in text
+    assert "Face value (the players over a free agent pickup):" in render_trades(
+        build_trades(league(), cfg(untouchable=["Untouchable Star"])))
 
 
 def test_the_bar_for_them_is_face_value_not_their_lineup():
@@ -665,3 +676,97 @@ def test_the_bar_for_them_is_face_value_not_their_lineup():
     assert not e.accepts and "They'd likely say no" in render_evaluation(e)
     listed = search_trades(snap, cfg(trade_min_gain=-1000), [1], team_id=2).trades
     assert not any(set(names(x.get)) == {"Cold Wing", "Rival Guard"} and names(x.give) == ["Hot Guard"] for x in listed)
+
+
+# ---- a trade is measured after the free agent moves you'd make anyway ----------------------------
+def test_a_free_agent_you_could_add_anyway_is_no_part_of_any_trade():
+    # A 30/g free agent beats Bench Guy (18) by far: pick him up, no trade needed. Before, every trade
+    # that let you cut someone for him got credit for him, and the free agent topped every list.
+    snap, c = league(), cfg(untouchable=["Untouchable Star"])
+    snap.free_agents.append(steady(35, "Great FA", F, 30, owner="fa"))
+    m = _Market(snap, c)
+    assert names_of(m.base_drop) == ["Bench Guy"] and names_of(m.base_add) == ["Great FA"]
+    r = build_trades(snap, c)
+    assert r.before.startswith("No trade needed: drop Bench Guy (~18.0/g) for Great FA (~30.0/g)")
+    assert r.before in render_trades(r)
+    assert r.trades and all("Great FA" not in names(t.add) for t in r.trades)
+    # Hot Guard for Cold Wing, against your roster with Great FA already in for Bench Guy.
+    t = evaluate_trade(snap, c, [1], [10], alternatives=False).trade
+    hot, cold = snap.my_roster[0], snap.other_rostered[0]
+    after = [p for p in m.base_me if p.id != hot.id] + [cold]
+    assert t.gain == pytest.approx((m.ros_lineups.total(after) - m.my_before) / m.weeks)
+    assert not t.add and not t.drop and t.fa_gain == 0
+
+
+def test_without_a_better_free_agent_there_is_no_move_before_trading():
+    r = build_trades(league(), cfg(untouchable=["Untouchable Star"]))
+    assert r.before is None and "No trade needed" not in render_trades(r)
+
+
+# ---- nobody gives a starter for players off waivers -------------------------------------------
+def waiver_pickups():
+    """Your roster with two players just picked up off waivers on a hot week, about 20/g on the
+    season, next to free agents just as good."""
+    snap = league()
+    snap.my_roster += [tp(6, "Hot Pickup", G, 30, 26, 20, 18, owner="me", acquisition_type="ADD"),
+                       tp(7, "Other Pickup", F, 30, 26, 20, 18, owner="me", acquisition_type="ADD")]
+    snap.free_agents += [steady(36, "Waiver Guard", G, 21, owner="fa"), steady(37, "Waiver Wing", F, 20, owner="fa")]
+    return snap
+
+
+def test_two_waiver_pickups_dont_buy_a_starter():
+    snap, c = waiver_pickups(), cfg(untouchable=["Untouchable Star"], trades_shown=50)
+    m = _Market(snap, c)
+    hot, other, guard = snap.my_roster[5], snap.my_roster[6], snap.other_rostered[3]  # Rival Guard, 26/g
+    assert m.replacement == 16  # third best free agent: 21, 20, 16
+    # On a hot week, either one alone looks about as good as Rival Guard, and the two far better...
+    assert m.now(hot) + m.now(other) > m.ros(guard) * 1.9
+    # ...but a manager who passed on them on waivers values them on rest of season, and only
+    # for what they score over a free agent.
+    assert m.their(hot) == m.ros(hot) and m.their(guard) == pytest.approx(26)
+    e = evaluate_trade(snap, c, [6, 7], [13], alternatives=False)
+    assert e.trade.their_face < 0 and not e.accepts
+    for t in build_trades(snap, c).trades + search_trades(snap, c, [6, 7]).trades:
+        assert t.their_face >= 0
+        assert not (set(names(t.give)) == {"Hot Pickup", "Other Pickup"} and "Rival Guard" in names(t.get))
+
+
+def test_their_view_keeps_recent_form_for_players_not_off_waivers():
+    snap, c = league(), cfg()
+    m = _Market(snap, c)
+    hot = snap.my_roster[0]  # drafted, hot start
+    assert m.their(hot) == pytest.approx(0.5 * m.now(hot) + 0.5 * m.ros(hot))
+    hot.acquisition_type = "ADD"
+    assert _Market(snap, c).their(hot) == pytest.approx(m.ros(hot))
+
+
+# ---- out with no return date -------------------------------------------------------------------
+from fantasy_bot.scoring import is_out_on  # noqa: E402
+
+
+def test_out_with_no_return_date_is_assumed_back_over_the_season():
+    snap, c = league(), cfg()
+    star = snap.other_rostered[1]  # Their Star, 45/g
+    star.injury_status = "OUT"
+    back = DATES[TODAY] + timedelta(days=c.trade_unknown_return_days)
+    games = sum(1 for sp in trade_days(snap) if sp in star.games and DATES[sp] >= back)
+    assert games > 0
+    assert _Market(snap, c).ros_lineups.solo(star) == pytest.approx(45 * games)
+    # Over the daily scout's week he's out until there's a date.
+    assert is_out_on(star, DATES[END])
+    # A season-ending injury is out for good.
+    star.injury_note = "Underwent knee surgery and will miss the rest of the season."
+    assert _Market(snap, c).ros_lineups.solo(star) == 0
+    # A return date wins over the assumption either way.
+    star.injury_note, star.expected_return = "", DATES[END - 2]
+    assert _Market(snap, c).ros_lineups.solo(star) == 45 * sum(1 for sp in trade_days(snap)
+                                                                if sp in star.games and sp >= END - 2)
+
+
+def test_reads_unknown_return_days(tmp_path):
+    toml = tmp_path / "bot.toml"
+    toml.write_text("[league]\nleague_id = 1\nyear = 2027\nteam_id = 3\n[trade]\nunknown_return_days = 21\n",
+                    encoding="utf-8")
+    assert load_config(toml, tmp_path / "none.toml").trade_unknown_return_days == 21
+    toml.write_text("[league]\nleague_id = 1\nyear = 2027\nteam_id = 3\n", encoding="utf-8")
+    assert load_config(toml, tmp_path / "none.toml").trade_unknown_return_days == 14

@@ -234,7 +234,7 @@ def pickups_line(t) -> str:
 def breakdown(t) -> str:
     """Face value next to the weekly number, and the part free agents make up: a trade that
     only works because of a waiver pickup is a different trade from one that works on talent."""
-    line = f"Face value (the players alone): {t.face:+.1f}/week for you, {t.their_face:+.1f}/week to them"
+    line = f"Face value (the players over a free agent pickup): {t.face:+.1f}/week for you, {t.their_face:+.1f}/week to them"
     if t.add or t.their_add:
         line += f". {pickups_line(t)[:-1]}"
     return line
@@ -274,11 +274,15 @@ def render_trades(r: TradeReport) -> str:
         "Each player has two values: *now* is the daily scout's, recent form first, which is what other "
         "managers go by. *Rest of season* leans on his season and ESPN's projection. Trades are scored with "
         "your best lineup each day: rest of season values for you; for them, a blend of now and rest of "
-        "season, since managers go by recent form but plan ahead too. Free agents count at rest of season "
-        "value on both sides: a hot week off waivers is a streamer, not a long-term piece.",
+        "season, since managers go by recent form but plan ahead too. Free agents, and players picked up off "
+        "waivers, count at rest of season value on both sides: a hot week off waivers is a streamer, not a "
+        "long-term piece. Face value counts each player over a free agent either manager could pick up, so "
+        "waiver-level players are worth about nothing in a trade.",
         "",
-        "**Top trades**",
     ]
+    if r.before:
+        lines += [r.before, ""]
+    lines.append("**Top trades**")
     if len(r.trades) > 1:
         lines.append("Alternatives, each judged on its own against your roster as it is:")
     if r.trades:
@@ -335,7 +339,8 @@ def render_evaluation(e: Evaluation) -> str:
         f"and get {sum(v.ros for v in t.get):.1f} ({sum(v.now for v in t.get):.1f} now).",
         "",
         "**Face value vs with roster moves**",
-        f"- Face value, the players in the deal alone with every game counted: {t.face:+.1f}/week for you, "
+        f"- Face value, the players in the deal alone, each over a free agent pickup, every game counted: "
+        f"{t.face:+.1f}/week for you, "
         f"{t.their_face:+.1f}/week to them.",
         f"- With roster moves, only games that make the best lineup each day, after drops and free agent "
         f"pickups: {t.gain:+.1f}/week for you, {t.their_gain:+.1f}/week to them.",
@@ -389,6 +394,7 @@ def render_search(s: TradeSearch, notes: Sequence[str] = ()) -> str:
         f"**{s.team_name}: trades {search_subject(s)}** (rest of season, {s.days} days{through})",
         "",
     ]
+    notes = list(notes) + ([s.before] if s.before else [])
     lines += [f"- {n}" for n in notes] + ([""] if notes else [])
     if not s.trades:
         lines.append(f"- {search_none(s)}")

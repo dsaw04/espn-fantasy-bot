@@ -71,6 +71,9 @@ class Config:
     trades_shown: int = 5
     trade_weights: Weights = field(default_factory=trade_weights)
     trade_projection_games: int = 20  # ESPN's projection counts as this many games in the rest of season value
+    # A player out with no return date is assumed back after this many days over the rest of the
+    # season, unless his injury note says his season is over. Without it he'd count as out for good.
+    trade_unknown_return_days: int = 14
 
     discord_webhook: Optional[str] = None
 
@@ -135,6 +138,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         trades_shown=int(trade.get("shown", 5)),
         trade_weights=Weights(**{**vars(trade_weights()), **{k: float(v) for k, v in trade.get("weights", {}).items()}}),
         trade_projection_games=int(trade.get("projection_games", 20)),
+        trade_unknown_return_days=max(0, int(trade.get("unknown_return_days", 14))),
         discord_webhook=env("DISCORD_WEBHOOK_URL", bot.get("discord_webhook")),
         hashtag_enabled=bool(htb.get("enabled", True)),
         hashtag_windows=list(htb.get("windows", ["season", "last_7", "last_14"])),
