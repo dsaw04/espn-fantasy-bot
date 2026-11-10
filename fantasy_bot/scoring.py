@@ -1,11 +1,15 @@
 """How the bot values a player over the next few days.
 
 expected value = sum over upcoming games of
-    availability on that day x (per game value + depth boost on that day)
+    availability on that day x (per game value x opponent + depth boost on that day)
 
-per game value  blends recent form, season average, ESPN's projection and, in a
-                points league, Hashtag Basketball's per game stats scored with
-                the league's points.
+per game value  projection.py: expected minutes times fantasy points per minute, from his
+                game log, last season and ESPN's projection. Players without a game log
+                fall back to the old blend of recent form, season average, ESPN's
+                projection and Hashtag's stats (per_game_value), which is also what other
+                managers go by when the trade scout guesses how they value a player.
+opponent        how many fpts that night's opponent gives up compared to what the players
+                facing it were projected for, pulled toward 1 until the sample is big.
 depth boost     is the extra production a player should get while an injured
                 teammate who shares his position is sitting out.
 availability    is 0 while a player is out, a discount when day-to-day, else 1.
@@ -15,8 +19,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
+from . import projection
 from .config import Config, Weights
 from .model import PlayerView, Snapshot
 
@@ -82,10 +87,50 @@ ROS_HASHTAG = ("season", "last_30", "last_14", "last_7")
 
 
 def rest_of_season(p: PlayerView, cfg: Config, scoring: Optional[Dict[str, float]] = None) -> float:
-    """Per game value over the rest of the season: the trade weights, which lean on the season
-    and ESPN's projection, so a hot or cold couple of weeks, or a game he left hurt, barely
-    moves it. Ignores injuries: it's what he's worth when he plays."""
+    """The old blend's rest of season value: the trade weights, which lean on the season and
+    ESPN's projection. Scorer.ros uses it for players without a game log."""
     return per_game_value(p, cfg, scoring, cfg.trade_weights, cfg.trade_projection_games, ROS_HASHTAG)
+
+
+def prior_of(p: PlayerView) -> projection.Prior:
+    last = p.last_season
+    return projection.Prior(
+        fpts=last.fpts if last else 0.0,
+        minutes=last.minutes if last else 0.0,
+        games=last.games if last else 0,
+        espn_fpg=p.fpts.get("projected") or None,
+        espn_mpg=p.mpg.get("projected") or None,
+    )
+
+
+# Opponent factors are pulled toward 1 by this many fpts of projection, about ten games' worth
+# of the players facing a team. Fit by `python -m fantasy_bot.backtest opponents`.
+OPPONENT_SHRINK = 2000.0
+
+
+def opponent_factors(snap: Snapshot) -> Dict[int, float]:
+    """NBA team id -> what the players facing it scored over what they were projected for that
+    morning, from every game log in the snapshot. Over 1 is a soft defense."""
+    priors = {p.id: prior_of(p) for p in snap.all_players() if p.last_season}
+    rate = projection.league_rate(priors)
+    scored: Dict[int, float] = {}
+    expected: Dict[int, float] = {}
+    for p in snap.all_players():
+        if not p.game_log:
+            continue
+        prior = prior_of(p)
+        schedule = snap.opponents.get(p.pro_team_id, {})
+        for sp, g in p.game_log.items():
+            opp = schedule.get(sp)
+            if opp is None or sp >= snap.today:
+                continue
+            pr = projection.project(p.game_log, sp, prior, rate, projection.DAILY)
+            if pr is None or pr.fpg <= 0:
+                continue
+            scored[opp] = scored.get(opp, 0.0) + g.fpts
+            expected[opp] = expected.get(opp, 0.0) + pr.fpg
+    k = OPPONENT_SHRINK
+    return {t: (scored[t] + k) / (expected[t] + k) for t in expected}
 
 
 def minutes(p: PlayerView) -> float:
@@ -181,14 +226,61 @@ class Scorer:
         self.snap = snap
         self.cfg = cfg
         self.by_team: Dict[int, List[PlayerView]] = {}
+        priors: Dict[int, projection.Prior] = {}
         for p in snap.all_players():
             self.by_team.setdefault(p.pro_team_id, []).append(p)
+            if p.last_season:
+                priors[p.id] = prior_of(p)
+        self.league_rate = projection.league_rate(priors)
         self._base: Dict[int, float] = {}
+        self._ros: Dict[int, float] = {}
+        self._form: Dict[int, float] = {}
+
+    def project(self, p: PlayerView, params: projection.Params,
+                skip: Iterable[int] = ()) -> Optional[projection.Projection]:
+        """None without a game log, or with projection = "blend": then the old blend is all there is.
+        skip: scoring periods to leave out of his log."""
+        if p.game_log is None or self.cfg.projection != "minutes":
+            return None
+        log = p.game_log
+        if skip:
+            skip = set(skip)
+            log = {sp: g for sp, g in log.items() if sp not in skip}
+        return projection.project(log, self.snap.today, prior_of(p), self.league_rate, params)
 
     def base(self, p: PlayerView) -> float:
+        """Per game value over the next week or so."""
         if p.id not in self._base:
-            self._base[p.id] = per_game_value(p, self.cfg, self.snap.scoring)
+            pr = self.project(p, projection.DAILY)
+            self._base[p.id] = pr.fpg if pr else self.form(p)
         return self._base[p.id]
+
+    def base_with(self, p: PlayerView, injured: Iterable[PlayerView]) -> float:
+        """Per game value in his usual role, with these injured teammates playing: his projection
+        from only the games they played too. The minutes model reacts fast, so once a starter has
+        sat a few games his backup's plain projection already carries the bigger role, which is
+        wrong for the days after the starter is back, and double counts a depth boost."""
+        missed = {sp for inj in injured if inj.game_log is not None
+                  for sp in (p.game_log or {}) if sp in inj.games and sp not in inj.game_log}
+        if not missed:
+            return self.base(p)
+        pr = self.project(p, projection.DAILY, missed)
+        return pr.fpg if pr else self.base(p)
+
+    def ros(self, p: PlayerView) -> float:
+        """Per game value over the rest of the season. Ignores injuries: it's what he's worth
+        when he plays."""
+        if p.id not in self._ros:
+            pr = self.project(p, projection.REST_OF_SEASON)
+            self._ros[p.id] = pr.fpg if pr else rest_of_season(p, self.cfg, self.snap.scoring)
+        return self._ros[p.id]
+
+    def form(self, p: PlayerView) -> float:
+        """The old blend, heavy on the last week or two: a worse projection, but what other
+        managers go by, so the trade scout uses it to guess what they'll pay."""
+        if p.id not in self._form:
+            self._form[p.id] = per_game_value(p, self.cfg, self.snap.scoring)
+        return self._form[p.id]
 
     # Share of vacated work by depth order among non-starters: the next man up
     # takes the most, the third stringer a little. Starters can only stretch a bit.
@@ -238,8 +330,9 @@ class Scorer:
         return out
 
     def value(self, p: PlayerView, horizon: Optional[List[int]] = None) -> Valuation:
-        base = self.base(p)
         openings = self.openings_for(p)
+        # The boost is on top of his usual role, not one the injury already gave him.
+        base = self.base_with(p, [o.injured for o in openings]) if openings else self.base(p)
         expected = 0.0
         games = 0
         for sp in self.snap.horizon if horizon is None else horizon:
@@ -251,7 +344,7 @@ class Scorer:
                 continue
             games += 1
             boost = sum(o.boost for o in openings if is_out_on(o.injured, day))
-            expected += avail * (base + boost)
+            expected += avail * (base * self.snap.opponent_factor(p, sp) + boost)
         return Valuation(
             player=p,
             base=base,

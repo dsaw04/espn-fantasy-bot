@@ -397,9 +397,10 @@ def trade_card(i: int, t, title: str = ""):
 
 
 def trades(cfg: Config, scout: Snapshot) -> None:
-    st.caption("*Now* is recent form. *Rest of season* leans on the season and ESPN's projection. Trades are "
-               "scored with your best lineup each day: rest of season for you, a blend of both for them. Only "
-               "the players in the deal count: no free agent pickups on either side.")
+    st.caption("*Now* is recent form. *Rest of season* is minutes times points per minute, with last season "
+               "and ESPN's projection pulling hot and cold starts back. Trades are scored with your best lineup "
+               "each day: rest of season for you, a blend of both for them. Only the players in the deal count: "
+               "no free agent pickups on either side.")
     st.session_state.setdefault("trade_mode", "Find trades")  # here, not default=, so Check this one can set it
     mode = st.segmented_control("Trades", ["Find trades", "Check a trade"], key="trade_mode",
                                 label_visibility="collapsed")

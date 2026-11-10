@@ -2,12 +2,14 @@
 
 Every player gets two per game values:
 
-now             the daily scout's value (scoring.per_game_value). It leans on the last
-                week or two, which is also what other managers go by.
-rest of season  the same blend with the trade scout's weights, which lean on the season
-                average and ESPN's projection, with the projection counting as
-                trade_projection_games real games. A hot or cold couple of weeks is pulled
-                back toward what he was expected to do.
+now             recent form (scoring.per_game_value): a blend that leans on the last
+                week or two, which is what other managers go by. It's a poor
+                projection, which is the point: it's how he looks, not what he'll do.
+rest of season  the projection model (projection.REST_OF_SEASON): minutes times points
+                per minute, with a long memory for the rate and last season and ESPN's
+                projection as the prior. A hot or cold couple of weeks is pulled back
+                toward what he was expected to do. Players without a game log fall back to
+                the old blend with the trade scout's weights.
 
 Now above rest of season is a player to sell high; below it, one to buy low.
 
@@ -47,7 +49,7 @@ from .config import Config
 from .lineup import assign, starting_slots
 from .model import PlayerView, Snapshot
 from .recommend import droppable
-from .scoring import ROS_HASHTAG, Scorer, availability_on, rest_of_season  # noqa: F401 (ROS_HASHTAG re-exported)
+from .scoring import ROS_HASHTAG, Scorer, availability_on  # noqa: F401 (ROS_HASHTAG re-exported)
 
 SIGNAL = 2.0  # fpts per game between now and rest of season that makes a sell high or buy low
 SHORTLIST = 60  # trades per team scored with full lineups, picked on a quick estimate
@@ -293,7 +295,6 @@ class _Market:
     def __init__(self, snap: Snapshot, cfg: Config):
         self.snap, self.cfg = snap, cfg
         self.scorer = Scorer(snap, cfg)
-        self._ros: Dict[int, float] = {}
         self.days = trade_days(snap)
         self.weeks = max(len(self.days), 1) / 7
         today = snap.period_dates.get(snap.today)
@@ -351,12 +352,11 @@ class _Market:
                 "so none gets credit for a free agent move.")
 
     def now(self, p: PlayerView) -> float:
-        return self.scorer.base(p)
+        """Recent form, the way managers see it."""
+        return self.scorer.form(p)
 
     def ros(self, p: PlayerView) -> float:
-        if p.id not in self._ros:
-            self._ros[p.id] = rest_of_season(p, self.cfg, self.snap.scoring)
-        return self._ros[p.id]
+        return self.scorer.ros(p)
 
     def season(self, p: PlayerView) -> float:
         """Fpts over the rest of the season on rest of season value, every game he can play

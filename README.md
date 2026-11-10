@@ -14,10 +14,11 @@ espn-api is read only, so the bot recommends and you make the moves in the ESPN 
 
 ```
 expected value = sum over games in the next N days of
-                 availability x (per game value + depth bump)
+                 availability x (per game value x opponent + depth bump)
 ```
 
-- **Per game value** blends last 7 days, last 15 days, season average, ESPN's projection and, in points leagues, Hashtag Basketball's per game stats scored with your league's points (see below). Weights live in `bot.toml`. The projection counts as much as 5 real games, so its weight fades as a player's games pile up and a preseason guess can't hold down a breakout.
+- **Per game value** is expected minutes times fantasy points per minute (`fantasy_bot/projection.py`), from every player's game log, last season and ESPN's projection. Points per minute is a skill that barely moves within a season, so it has a long memory and leans on last season until this one has a real sample. Minutes are the role, and roles change overnight, so minutes have a short memory. A backup's hot shooting night barely moves his value. A backup who starts playing 30 minutes moves it right away. Players with tiny samples last season are pulled toward the league's rate, and rookies start a bit below it. The parameters are fit by the [backtest](#backtest), and a separate, slower set gives the rest of season value for trades.
+- **Opponent** is how much the players facing that night's opponent have scored over their projections this season, pulled toward 1 until there are about ten games of it. Soft defenses are worth around 5-10% more, tough ones about 5% less. Home and away, and back-to-backs for players who suit up, made no real difference in the backtest, so they're left out.
 - **Availability** is 0 while a player is out (until his expected return date), discounted when day-to-day, else 1. Return dates come from ESPN fantasy when it has one, otherwise from ESPN's free [injury report](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries), which also supplies the note shown next to each injured player. If that feed is down the run carries on without it.
 - **Depth bump** is `injured player's fpts x absorb_rate x position overlap x depth share`, applied only on days the injured player misses. It's an estimate, used for the next few days' value and for injuries too fresh to have game logs. Players out all season are skipped, since their backups' stats already reflect the bigger role.
 - Points leagues use ESPN's own fantasy point averages. Category leagues fall back to standard ESPN points as a ranking proxy.
@@ -43,8 +44,8 @@ Anyone on your roster can be suggested as a drop, except the names in `untouchab
 
 Each free agent gets a per game value for the role he has right now:
 
-- **Backup to an injured starter**, with at least `min_games_without` games played while that starter sat: his actual average in those games, but only until the starter is due back. After that he counts at his usual value, so a role that ends in two days isn't valued as if it lasts all week.
-- **Anyone else:** his blended per game value.
+- **Backup to an injured starter**, with at least `min_games_without` games played while that starter sat: his actual average in those games, but only until the starter is due back. After that he counts at his usual value, projected from only the games he played with the starter, so a role that ends in two days isn't valued as if it lasts all week.
+- **Anyone else:** his per game value.
 
 Your own players get the same role based value, so a pickup isn't valued one way before you add him and another way after.
 
@@ -82,8 +83,8 @@ ESPN doesn't publish future matchup dates. Matchups follow its Monday to Sunday 
 
 `python -m fantasy_bot --trades` suggests trades with the other teams: sell players running hot, buy players off to a slow start. Every player gets two per game values:
 
-- **Now** is the daily scout's value. It leans on the last week or two, which is also what other managers go by.
-- **Rest of season** is the same blend with the weights under `[trade.weights]`, which lean on the season average and ESPN's projection. The projection counts as `projection_games` real games (20 by default), so a hot or cold couple of weeks is pulled back toward what the player was expected to do. In points leagues, Hashtag's season line scored with your league's points is part of it too.
+- **Now** is recent form: the old blend of last 7 days, last 15 days, season average, ESPN's projection and Hashtag's line, weighted by `[weights]`. It's a worse projection than the model (see the backtest), and that's the point: it's what other managers go by.
+- **Rest of season** is the projection model with its slower rest of season parameters. A hot or cold couple of weeks is pulled back toward what the player was expected to do. Players without a game log fall back to the old blend with the weights under `[trade.weights]`.
 
 A player whose now value is above his rest of season value is a **sell high**. One below it is a **buy low**.
 
@@ -207,6 +208,29 @@ python -m fantasy_bot.review --data-dir data
 
 Local runs only log when given `--data-dir`.
 
+## Backtest
+
+`python -m fantasy_bot.backtest` replays past seasons from ESPN's public data (no login). Every few days, each model projects every player from what was known that morning, and is checked against what he averaged over the next week, and over the rest of the season, in the games he played. Results in fpts per game missed, on seasons the parameters weren't fit on (they were fit on 2024-25):
+
+| | Old blend | Season average | Minutes model |
+| --- | --- | --- | --- |
+| 2025-26, next 7 days | 7.02 | 6.83 | **6.40** |
+| 2025-26, next 7 days, 20+ mpg players | 7.52 | 7.14 | **6.73** |
+| 2025-26, rest of season | 4.84 | 5.22 | **4.36** |
+| 2026-27, first 3 weeks | 7.82 | 8.03 | **6.58** |
+
+The old blend did worse than a plain season average over the next week: last week's games went into it four times over (last 7, last 15, the season and Hashtag's last 14), so it chased hot weeks. The opponent adjustment takes a little more off (6.40 to 6.375, in both seasons tried).
+
+```bash
+python -m fantasy_bot.backtest fetch 2024 2025 2026 2027  # into data/backtest; each season needs the one before for last season's totals
+python -m fantasy_bot.backtest compare 2026 2027          # the table above
+python -m fantasy_bot.backtest fit 2025 --check 2026      # refit projection.DAILY and REST_OF_SEASON
+python -m fantasy_bot.backtest opponents 2025 2026        # the opponent adjustment and how hard to shrink it
+python -m fantasy_bot.backtest factors 2026               # home/away, back-to-backs and defenses
+```
+
+Scoring is ESPN's standard points unless you pass yours, e.g. `--scoring '{"PTS": 1, "REB": 1.2, "TO": -1}'`. One caveat: ESPN's season projection is whatever ESPN shows for that season today. It looks like the preseason one (its games played are projected, not actual), but if ESPN revised it during the season, models using it look a bit better in the backtest than they really were. Without ESPN's projection at all, the minutes model still misses by 6.41 over the next week.
+
 ## Tuning
 
 | Setting | What it does |
@@ -222,9 +246,10 @@ Local runs only log when given `--data-dir`.
 | `min_games_without` | Games a backup must have played without the injured starter before his new role counts. Lower it to jump on injuries earlier, at the cost of smaller samples. |
 | `absorb_rate` | How much of an injured star's output flows to backups. 0.5 is a reasonable starting point. |
 | `min_minutes_for_depth` | Ignore injuries to players who weren't playing real minutes anyway. |
-| `weights` | Lean on `projected` early in the season, then shift to `last_7`/`last_15`. `hashtag` sets how much Hashtag's stats count in points leagues. |
+| `projection` | `"minutes"` (the default, backtested) or `"blend"` to go back to the old weighted blend for every value. |
+| `weights` | The old blend: recent form for the trade scout, and every value with `projection = "blend"` or for a player with no game log. `hashtag` sets how much Hashtag's stats count in points leagues. |
 | `[trade]` | `max_players` a side, `min_gain` fpts a week for you, `fairness` fpts a week it may look worse to them, `their_recent`, `shown` trades listed. Raise `fairness` to see bolder offers. |
-| `[trade.weights]` | The rest of season blend. More `projected` and a higher `projection_games` regress hot and cold starts harder. |
+| `[trade.weights]` | The old rest of season blend, for players with no game log or with `projection = "blend"`. |
 
 ## Tests
 

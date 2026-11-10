@@ -12,7 +12,7 @@ from .lineup import TodayPlan, Week, todays_lineup
 from .matchup import Judge, Verdict
 from .model import MatchupState, PlayerView, Snapshot, n_games
 from .opportunity import Opportunity, fresh_injuries, opportunities
-from .scoring import Role, Scorer, Valuation, availability_on, hashtag_behind, rest_of_season, value_on
+from .scoring import Role, Scorer, Valuation, availability_on, hashtag_behind, value_on
 
 
 @dataclass
@@ -189,7 +189,7 @@ def _expected(p: PlayerView, per_game, days: List[int], snap: Snapshot, cfg: Con
     for sp in days:
         if sp in p.games:
             day = snap.period_dates.get(sp)
-            total += availability_on(p, day, cfg) * value_on(per_game, day)
+            total += availability_on(p, day, cfg) * value_on(per_game, day) * snap.opponent_factor(p, sp)
     return total
 
 
@@ -197,7 +197,7 @@ def _role(p: PlayerView, per_game: float, opp: Optional[Opportunity], scorer: Sc
     """His role value lasts only until the injured teammate is due back."""
     if opp is None or opp.injured.expected_return is None:
         return per_game
-    return Role(per_game, scorer.base(p), opp.injured)
+    return Role(per_game, scorer.base_with(p, [opp.injured]), opp.injured)
 
 
 def _consistent(opp: Optional[Opportunity], drop: PlayerView, drop_per_game: float) -> bool:
@@ -233,7 +233,7 @@ def waiver_moves(snap: Snapshot, cfg: Config, scorer: Scorer):
     # Streaming spots on the better of his value now and over the rest of the season: a star who
     # left a game hurt or had a cold week drops down the recent form list, but he's no streamer,
     # and neither is a backup you just added for the bigger role he has while a starter sits.
-    ros = {v.player.id: rest_of_season(v.player, cfg, snap.scoring) for v in roster}
+    ros = {v.player.id: scorer.ros(v.player) for v in roster}
     worth = lambda v: max(value[v.player.id], ros[v.player.id])
     streamers = {v.player.id for v in sorted(roster, key=worth)[: cfg.streaming_spots]}
     # Everyone you'd field, untouchables included.

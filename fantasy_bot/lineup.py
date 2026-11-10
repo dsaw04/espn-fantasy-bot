@@ -99,7 +99,7 @@ def project(
         for p, per_game in roster:
             if sp not in p.games or (now is not None and p.games[sp] <= now):
                 continue
-            value = availability_on(p, day, cfg) * value_on(per_game, day)
+            value = availability_on(p, day, cfg) * value_on(per_game, day) * snap.opponent_factor(p, sp)
             if value > 0:
                 playing.append((p, value))
                 week.games[p.id] = week.games.get(p.id, 0) + 1

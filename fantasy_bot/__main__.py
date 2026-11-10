@@ -13,12 +13,11 @@ from .config import Config, load_config
 from .history import Alerts, alert_key, log_run, review_last_matchup, reviews
 from .lineup import todays_lineup
 from .model import Snapshot
-from .opportunity import needs_game_logs
 from .recommend import build_report
 from .report import (
     lineup_lines, lineup_needs_changes, post_to_discord, render, render_evaluation, render_search, render_trades,
 )
-from .scoring import Scorer
+from .scoring import Scorer, opponent_factors
 from .trade import (
     TradeInputError, build_trades, evaluate_trade, find_included, find_players, find_team, search_trades,
 )
@@ -52,10 +51,12 @@ def add_injury_news(snap: Snapshot) -> None:
 
 
 def scout_snapshot(source, cfg: Config) -> Snapshot:
-    """Everything the daily report needs: the league, injury news, game logs and Hashtag's lines."""
+    """Everything the daily report needs: the league, injury news, every player's game log and
+    last season (the projection runs on them), opponent factors and Hashtag's lines."""
     snap = source.snapshot()
     add_injury_news(snap)
-    source.attach_game_logs(needs_game_logs(snap, cfg))
+    source.attach_cards(snap.all_players())
+    snap.opp_factors = opponent_factors(snap)
     if cfg.hashtag_enabled:
         add_hashtag_rankings(snap, cfg)
     return snap
@@ -63,7 +64,7 @@ def scout_snapshot(source, cfg: Config) -> Snapshot:
 
 def trade_snapshot(source, cfg: Config) -> Snapshot:
     snap = source.snapshot()
-    source.attach_cards(snap.other_rostered)  # their recent form, not just season totals
+    source.attach_cards(snap.all_players())  # recent form, game logs and last season, for everyone
     add_injury_news(snap)
     if cfg.hashtag_enabled:
         add_hashtag_rankings(snap, cfg)

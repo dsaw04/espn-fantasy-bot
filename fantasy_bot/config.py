@@ -57,6 +57,9 @@ class Config:
     dtd_availability: float = 0.6  # chance a day-to-day player suits up
     lineup_min_gain: float = 2.0  # fpts a better lineup must add today before the bot says to change it
 
+    # How players are valued: "minutes" (projection.py, expected minutes times points per minute
+    # from game logs, backtested) or "blend" (the old weighted blend of splits, [weights] below).
+    projection: str = "minutes"
     weights: Weights = field(default_factory=Weights)
 
     # Trade scout (--trades): sells players running hot for players off to a slow start.
@@ -130,6 +133,7 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         absorb_rate=float(bot.get("absorb_rate", 0.5)),
         dtd_availability=float(bot.get("dtd_availability", 0.6)),
         lineup_min_gain=float(bot.get("lineup_min_gain", 2.0)),
+        projection=str(bot.get("projection", "minutes")),
         weights=Weights(**{k: float(v) for k, v in w.items()}),
         trade_max_players=int(trade.get("max_players", 2)),
         trade_min_gain=float(trade.get("min_gain", 3.0)),
@@ -145,6 +149,8 @@ def load_config(path: str | Path = "bot.toml", secrets: str | Path = "secrets.to
         hashtag_save_dir=htb.get("save_dir") or None,
         hashtag_multipliers={**DEFAULT_MULTIPLIERS, **{k: float(v) for k, v in htb.get("multipliers", {}).items()}},
     )
+    if cfg.projection not in ("minutes", "blend"):
+        raise SystemExit(f"[bot] projection must be 'minutes' or 'blend', not {cfg.projection!r}.")
     bad = set(cfg.hashtag_windows) - {"season", "last_7", "last_14", "last_30"}
     if bad:
         raise SystemExit(f"[hashtag] windows has unknown entries {sorted(bad)}.")

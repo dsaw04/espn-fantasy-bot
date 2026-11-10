@@ -26,6 +26,10 @@ min_minutes_for_depth = 18 # an injured player must average this to open up a ro
 absorb_rate = 0.5          # share of an injured player's production backups pick up
 dtd_availability = 0.6     # how much to discount day-to-day players
 lineup_min_gain = 2.0      # fpts a better lineup must add today before the bot says to change yours
+# How players are valued. "minutes": expected minutes x fpts per minute from game logs, last season and
+# ESPN's projection, fit and checked by `python -m fantasy_bot.backtest` (about 9% closer than the old blend
+# over the next week). "blend": the old weighted blend under [weights], for everything.
+projection = "minutes"
 
 [hashtag]
 # Scrapes hashtagbasketball.com/fantasy-basketball-rankings (free, every player)
@@ -39,8 +43,10 @@ windows = ["season", "last_7", "last_14"]   # any of season, last_7, last_14, la
 multipliers = { "FG%" = 1, "FT%" = 1, "3PM" = 1, PTS = 1, REB = 1, AST = 1, STL = 1.25, BLK = 1.25, TO = 0.25 }
 
 [weights]
-# How much each split counts toward per game value. Lean on projections early
-# in the season, then shift weight to last_7 and last_15 as samples grow.
+# The old blend: how much each split counts. With projection = "minutes" it's only "recent form", which
+# the trade scout uses to guess how other managers see a player (they go by the last week or two), and
+# the fallback for a player with no game log. The backtest found it a worse projection than a plain
+# season average, because last week's games count in last_7, last_15, season and hashtag at once.
 last_7 = 0.35
 last_15 = 0.20
 season = 0.20
@@ -59,9 +65,8 @@ projection_games = 20      # ESPN's projection counts as this many real games in
 unknown_return_days = 14   # a player out with no return date is assumed back after this many days (not for season-ending injuries)
 
 [trade.weights]
-# Rest of season value. Leans on the season and ESPN's projection, so a hot or cold couple
-# of weeks is pulled back toward what a player was expected to do. The daily scout's
-# [weights] above are the "now" value: recent form, which is what other managers go by.
+# The old rest of season blend, only used with projection = "blend" or for a player with no game log.
+# Otherwise rest of season value is the minutes model with its slower settings (projection.REST_OF_SEASON).
 last_7 = 0.0
 last_15 = 0.10
 season = 0.30

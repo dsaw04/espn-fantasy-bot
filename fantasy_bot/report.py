@@ -269,8 +269,9 @@ def render_trades(r: TradeReport) -> str:
     lines: List[str] = [
         f"**{r.team_name}: trade scout** (rest of season, {r.days} days{through})",
         "",
-        "Each player has two values: *now* is the daily scout's, recent form first, which is what other "
-        "managers go by. *Rest of season* leans on his season and ESPN's projection. Trades are scored with "
+        "Each player has two values: *now* is recent form, which is what other managers go by. *Rest of "
+        "season* is his projected minutes times points per minute, with last season and ESPN's projection "
+        "pulling hot and cold starts back. Trades are scored with "
         "your best lineup each day: rest of season values for you; for them, a blend of now and rest of "
         "season, since managers go by recent form but plan ahead too. A trade is valued on the players "
         "alone: the side with more drops its weakest, the side with fewer leaves the spots open, and no free "

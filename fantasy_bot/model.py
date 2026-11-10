@@ -49,6 +49,15 @@ class GameLog:
     minutes: float
 
 
+@dataclass(frozen=True)
+class SeasonTotals:
+    """A whole season's fantasy points, minutes and games played."""
+
+    fpts: float
+    minutes: float
+    games: int
+
+
 @dataclass
 class PlayerView:
     id: int
@@ -75,9 +84,11 @@ class PlayerView:
     percent_owned: float = 0.0
     # Hashtag Basketball rankings by window: "season", "last_7", "last_14", "last_30"
     hashtag: Dict[str, HashtagLine] = field(default_factory=dict)
-    # scoring period id -> stats, for games he played this season. None until fetched,
-    # which only happens for injured rotation players and their free agent teammates.
+    # scoring period id -> stats, for games he played this season. None until fetched from
+    # his player card; the projection falls back to the old blend without it.
     game_log: Optional[Dict[int, GameLog]] = None
+    # Last season's totals, from the player card. None until fetched or if he didn't play.
+    last_season: Optional[SeasonTotals] = None
 
     @property
     def positions(self) -> Set[str]:
@@ -161,6 +172,16 @@ class Snapshot:
     team_names: Dict[int, str] = field(default_factory=dict)  # fantasy team id -> name
     # fantasy team id -> season record (wins, losses, ties). Empty when unknown.
     team_records: Dict[int, Tuple[int, int, int]] = field(default_factory=dict)
+    # NBA team id -> scoring period -> the NBA team it plays that day
+    opponents: Dict[int, Dict[int, int]] = field(default_factory=dict)
+    # NBA team id -> fpts its opponents score against it over their projections (1.0 = average).
+    # Empty means no adjustment. See scoring.opponent_factors.
+    opp_factors: Dict[int, float] = field(default_factory=dict)
+
+    def opponent_factor(self, p: PlayerView, sp: int) -> float:
+        """How much his game that day is worth over his usual, for the defense he faces."""
+        opp = self.opponents.get(p.pro_team_id, {}).get(sp)
+        return self.opp_factors.get(opp, 1.0) if opp is not None else 1.0
 
     def record(self, team_id: int) -> str:
         """'5-3', or '5-3-1' with ties. Empty when unknown."""

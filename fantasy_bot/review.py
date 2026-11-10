@@ -59,7 +59,8 @@ def main() -> None:
         bias = mean(r.bias for r in rs if r.bias is not None)
         if abs(bias) >= 1.5 and len(rel) >= 3:
             direction = "low" if bias > 0 else "high"
-            print(f"  Estimates run {abs(bias):.1f} fpts/g {direction}. Try shifting [weights] toward last_7 and last_15.")
+            print(f"  Estimates run {abs(bias):.1f} fpts/g {direction}. A few weeks of one roster is a small sample; "
+                  "check it on every player with  python -m fantasy_bot.backtest compare <this season>.")
 
 
 if __name__ == "__main__":

@@ -30,12 +30,15 @@ def pv(pid, name, team, team_id, slots, fpts, mpg, sched, **kw):
     return PlayerView(
         id=pid, name=name, pro_team=team, pro_team_id=team_id,
         eligible_slots=slots, fpts={"season": fpts, "last_7": fpts, "projected": fpts},
-        mpg={"season": mpg, "last_7": kw.pop("mpg7", mpg)}, games=games(*sched), **kw,
+        mpg={"season": mpg, "last_7": kw.pop("mpg7", mpg), "projected": mpg}, games=games(*sched), **kw,
     )
 
 
 def cfg(**kw):
-    base = dict(league_id=1, year=2027, team_id=1, horizon_days=4, min_edge=4.0, min_games_without=3, max_moves=2)
+    # The recommendation tests use the old blend, so values come straight from each player's splits.
+    # The minutes projection has its own tests below.
+    base = dict(league_id=1, year=2027, team_id=1, horizon_days=4, min_edge=4.0, min_games_without=3, max_moves=2,
+                projection="blend")
     base.update(kw)
     return Config(**base)
 
@@ -456,6 +459,7 @@ def test_snapshot_end_to_end_with_fake_league():
     src = object.__new__(EspnSource)
     src.cfg, src.league, src.points_league = cfg(), league, True
     src._games_by_team = src._build_game_index()
+    src._opponents = src._build_opponents()
     snap = src.snapshot()
 
     assert snap.horizon == [10, 11, 12, 13]

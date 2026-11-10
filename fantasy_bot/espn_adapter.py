@@ -18,7 +18,7 @@ from espn_api.requests.espn_requests import ESPNAccessDenied
 
 from .config import Config
 from .matchup import adds_limit, calendar, check_calendar
-from .model import GameLog, MatchupState, PlayerView, Side, Snapshot
+from .model import GameLog, MatchupState, PlayerView, SeasonTotals, Side, Snapshot
 
 EASTERN = ZoneInfo("America/New_York")  # NBA game days are US Eastern days
 ABBREV_TO_ID = {abbrev: tid for tid, abbrev in PRO_TEAM_MAP.items() if isinstance(tid, int)}
@@ -75,6 +75,7 @@ class EspnSource:
         scoring = (self.league.settings.scoring_type or "").upper()
         self.points_league = "POINTS" in scoring
         self._games_by_team = self._build_game_index()
+        self._opponents = self._build_opponents()
 
     # ---- schedule ---------------------------------------------------------
     def _build_game_index(self) -> Dict[int, Dict[int, datetime]]:
@@ -85,6 +86,19 @@ class EspnSource:
                     continue
                 ts = datetime.fromtimestamp(games[0]["date"] / 1000.0, tz=timezone.utc)
                 idx.setdefault(int(team_id), {})[int(sp)] = ts.astimezone(EASTERN)
+        return idx
+
+    def _build_opponents(self) -> Dict[int, Dict[int, int]]:
+        idx: Dict[int, Dict[int, int]] = {}
+        for team_id, periods in (self.league.pro_schedule or {}).items():
+            for sp, games in periods.items():
+                if not games:
+                    continue
+                g = games[0]
+                home, away = g.get("homeProTeamId"), g.get("awayProTeamId")
+                opp = away if home == int(team_id) else home
+                if opp:
+                    idx.setdefault(int(team_id), {})[int(sp)] = int(opp)
         return idx
 
     def _period_dates(self) -> Dict[int, object]:
@@ -221,12 +235,13 @@ class EspnSource:
     CARD_BATCH = 50  # players per player card request
 
     def _cards(self, ids: List[int]) -> Dict[int, dict]:
-        """Player cards by player id, with the last 7 and 15 day splits and every game this season."""
+        """Player cards by player id, with the last 7 and 15 day splits, every game this season
+        and last season's totals."""
         out: Dict[int, dict] = {}
         for i in range(0, len(ids), self.CARD_BATCH):
             card = self.league.espn_request.get_player_card(
                 ids[i : i + self.CARD_BATCH], self.league.finalScoringPeriod,
-                additional_filters=[f"01{self.cfg.year}", f"02{self.cfg.year}"],
+                additional_filters=[f"01{self.cfg.year}", f"02{self.cfg.year}", f"00{self.cfg.year - 1}"],
             )
             for entry in card.get("players", []):
                 out[entry.get("id", entry.get("player", {}).get("id"))] = entry
@@ -239,6 +254,7 @@ class EspnSource:
         v.mpg.update(richer.mpg)
         v.games_played = richer.games_played or v.games_played
         v.game_log = self._game_log(entry)  # the card already carries every game
+        v.last_season = self._last_season(entry)
 
     def _my_roster(self, players: List[Player]) -> List[PlayerView]:
         cards = self._cards([p.playerId for p in players])
@@ -251,8 +267,8 @@ class EspnSource:
         return views
 
     def attach_cards(self, players: List[PlayerView]) -> None:
-        """Recent form and game logs for players from other teams' rosters, which only carry
-        season totals. The trade scout needs both for everyone it might trade for."""
+        """Recent form, game logs and last season for players from other teams' rosters and
+        free agents, which only carry season totals. The projection needs all three."""
         players = [p for p in players if p.game_log is None]
         cards = self._cards([p.id for p in players])
         for p in players:
@@ -312,6 +328,27 @@ class EspnSource:
                 fpts = float(sum(stats.get(k, 0) * w for k, w in DEFAULT_POINTS.items()))
             log[int(s["scoringPeriodId"])] = GameLog(fpts, mins)
         return log
+
+    def _last_season(self, raw: dict) -> Optional[SeasonTotals]:
+        """Last season's totals from a player card, scored like this season's games."""
+        player = raw.get("player", raw)
+        for s in player.get("stats", []):
+            if (
+                s.get("seasonId") != self.cfg.year - 1
+                or s.get("statSplitTypeId") != 0
+                or s.get("statSourceId") != self.ACTUAL
+            ):
+                continue
+            stats = {STATS_MAP.get(k, k): v for k, v in (s.get("stats") or {}).items()}
+            games, mins = int(stats.get("GP") or 0), float(stats.get("MIN") or 0)
+            if games <= 0 or mins <= 0:
+                return None
+            if self.points_league:
+                fpts = float(s.get("appliedTotal") or 0)
+            else:
+                fpts = float(sum(stats.get(k, 0) * w for k, w in DEFAULT_POINTS.items()))
+            return SeasonTotals(fpts, mins, games)
+        return None
 
     def game_logs(self, ids: List[int]) -> Dict[int, Dict[int, GameLog]]:
         """This season's games for these players, in one request."""
@@ -414,4 +451,5 @@ class EspnSource:
             season_end=last,
             team_names=names,
             team_records=records,
+            opponents=self._opponents,
         )
